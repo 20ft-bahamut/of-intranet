@@ -137,7 +137,7 @@ npm run dev
 
 ## 🧑‍💻 제작자
 
-**최병철 (Choi ByungChul)**  
+**박하맛이긔 (BahamuT)**  
 Fullstack PM · Developer  
 > 📦 Orderfresh / 주식회사 동해  
 > 📅 2025 — Present

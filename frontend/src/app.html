@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <!-- 기본 메타 -->
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+
+    <!-- 문서 정보 -->
+    <title>주식회사 동해 · 주문 취합 대시보드</title>
+    <meta name="description" content="주식회사 동해(Orderfresh) 내부 주문 취합 대시보드 – 기간별·채널별 주문 분석, 실시간 현황 모니터링" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="주식회사 동해 · 주문 취합 대시보드" />
+    <meta property="og:description" content="어제·오늘·7일 주문 요약, 채널별/상품별 분포" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="ko_KR" />
+
+    <!-- Favicon -->
+    <link rel="icon" href="%sveltekit.assets%/favicon.png" />
+
+    <!-- Bulma / Material Icons (CDN 고정 버전) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/material-icons@1.13.14/iconfont/material-icons.min.css" />
+
+    <!-- 전역 보조 스타일 -->
+    <style>
+        .kpi .card-content { padding: 1rem 1.25rem; }
+        .kpi .title { margin-bottom: .25rem; }
+        .is-muted { color: #6b7280; }
+        .table.is-tight td, .table.is-tight th { padding: .5rem .75rem; }
+        .sticky-filters { position: sticky; top: 0; z-index: 5; background: white; }
+        .skip-link {
+            position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden;
+        }
+        .skip-link:focus {
+            position: static; width: auto; height: auto; padding: .5rem;
+            background: #fff7ed; border: 1px solid #fb923c;
+        }
+        .icon-text .material-icons { font-size: 1.15em; vertical-align: text-bottom; }
+    </style>
+
+    %sveltekit.head%
+</head>
+<body data-sveltekit-preload-data="hover">
+<!-- 접근성: 본문 건너뛰기 -->
+<a href="#main" class="skip-link">본문으로 건너뛰기</a>
+
+<!-- 문서 본문 -->
+<div style="display: contents">%sveltekit.body%</div>
+</body>
+</html>

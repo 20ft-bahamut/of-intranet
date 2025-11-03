@@ -1,0 +1,16 @@
+/* 코드 / 태그류 표시용 mono 폰트 (한글 포함 대응) */
+.mono {
+    font-family:
+            ui-monospace,
+            SFMono-Regular,
+            Menlo,
+            Monaco,
+            Consolas,
+            "Liberation Mono",
+            "Courier New",
+            "D2Coding",
+            "Noto Sans Mono CJK KR",
+            "Nanum Gothic Coding",
+            "Apple SD 산돌고딕 Neo",
+            monospace;
+}

@@ -1,69 +1,73 @@
 <script>
+    import { createEventDispatcher, onMount } from 'svelte';
+    import Modal from '$lib/components/Modal.svelte';
+
     export let open = false;
     export let title = '확인';
+    /** HTML 허용 */
     export let message = '';
-    export let confirmText = '삭제';
+    export let confirmText = '확인';
     export let cancelText = '취소';
-    export let confirmClass = 'is-danger'; // is-link, is-warning 등
+    export let confirmClass = 'is-danger';
     export let busy = false;
 
-    let firstBtn;
+    // 드래그 가능 여부/크기 옵션 (필요 시 화면별로 덮어쓰기)
+    export let draggable = true;
+    export let width = 440;
+    export let maxHeight = 420;
 
-    // ESC로 닫기
-    function onKeydown(e) {
-        if (e.key === 'Escape') {
-            e.stopPropagation();
-            dispatch('cancel');
-        }
-    }
-
-    import { createEventDispatcher } from 'svelte';
     const dispatch = createEventDispatcher();
+    let confirmBtn;
 
-    $: if (open) queueMicrotask(() => firstBtn?.focus());
+    function onClose() { dispatch('cancel'); }
+    function onConfirm() { if (!busy) dispatch('confirm'); }
+
+    // 모달 열릴 때 확인 버튼에 포커스
+    onMount(() => {
+        const i = setInterval(() => {
+            if (open && confirmBtn) {
+                confirmBtn.focus();
+                clearInterval(i);
+            }
+        }, 0);
+    });
 </script>
 
-{#if open}
-    <div class="modal is-active" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmDesc" on:keydown={onKeydown}>
-        <div class="modal-background" on:click={() => dispatch('cancel')}></div>
-
-        <div class="modal-card">
-            <header class="modal-card-head">
-                <p id="confirmTitle" class="modal-card-title">{title}</p>
-                <button class="delete" type="button" aria-label="닫기" on:click={() => dispatch('cancel')}></button>
-            </header>
-
-            <section class="modal-card-body">
-                <p id="confirmDesc">{@html message}</p>
-            </section>
-
-            <footer class="modal-card-foot actions-gap">
-                <button class={"button " + confirmClass} type="button" disabled={busy}
-                        on:click={() => dispatch('confirm')} bind:this={firstBtn}>
-                    {confirmText}
-                </button>
-                <button class="button is-light" type="button" disabled={busy}
-                        on:click={() => dispatch('cancel')}>
-                    {cancelText}
-                </button>
-            </footer>
+<Modal
+        {open}
+        {draggable}
+        {width}
+        {maxHeight}
+        title={title}
+        ariaDescription="확인을 위해 내용을 검토하세요."
+        on:close={onClose}
+>
+    <svelte:fragment slot="body">
+        <div class="content" aria-live="polite">
+            {@html message}
         </div>
-    </div>
-{/if}
+    </svelte:fragment>
+
+    <svelte:fragment slot="footer">
+        <div class="buttons is-right actions-gap">
+            <button
+                    class="button"
+                    type="button"
+                    on:click={onClose}
+                    disabled={busy}
+            >{cancelText}</button>
+
+            <button
+                    class={"button " + confirmClass + (busy ? " is-loading" : "")}
+                    type="button"
+                    on:click={onConfirm}
+                    bind:this={confirmBtn}
+            >{confirmText}</button>
+        </div>
+    </svelte:fragment>
+</Modal>
 
 <style>
-    .modal-card-body p { margin: 0; }
-
-    /* 버튼 간격 넉넉히 + 모바일 줄바꿈 대응 */
-    .actions-gap {
-        display: flex;               /* Bulma가 이미 flex지만 명시 */
-        gap: 0.75rem;                /* ← 여기서 간격 키움 (원하면 1rem) */
-        flex-wrap: wrap;             /* 화면 좁으면 다음 줄로 */
-        justify-content: flex-start; /* 좌측 정렬(원하면 flex-end) */
-    }
-
-    /* 파괴적 버튼(위험) 더 도드라지게 살짝 두껍게 */
-    .actions-gap .is-danger {
-        font-weight: 600;
-    }
+    .actions-gap { gap: .75rem; display: inline-flex; flex-wrap: wrap; }
+    .content :global(p) { margin: 0; } /* 한 줄 메시지일 때 여백 축소 */
 </style>

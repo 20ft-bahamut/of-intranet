@@ -1,0 +1,37 @@
+/* =========================
+   공통 검색바 (SearchBar)
+   ========================= */
+.of-searchbar { display: flex; align-items: center; }
+.of-sb-controls {
+    --sb-height: 44px;
+    display: flex; align-items: stretch; gap: .25rem;
+    border: 1px solid #e6e6e6; border-radius: .5rem;
+    padding: .25rem; background: #fff; overflow: hidden;
+}
+
+.of-sb-input, .of-sb-select, .of-sb-btn { height: var(--sb-height); box-sizing: border-box; }
+
+/* 입력 */
+.of-sb-input {
+    min-width: 220px; max-width: 520px; width: 42vw;
+    padding: .6rem .9rem; border: none; outline: none; font-size: 1rem; box-shadow: none;
+}
+
+/* 셀렉트 */
+.of-sb-select { display: inline-flex; align-items: center; padding: 0 .2rem; background: transparent; }
+.of-sb-select select { height: 100%; border: none; background: transparent; padding: 0 .6rem; font-size: 1rem; appearance: none; }
+.of-sb-select--divider-left { border-left: 1px solid rgba(0,0,0,.06); }
+.of-sb-select--divider-right{ border-right:1px solid rgba(0,0,0,.06); }
+
+/* 버튼 */
+.of-sb-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0 .8rem; border-left: 1px solid rgba(0,0,0,.06);
+}
+.of-sb-btn--primary { background: #3ac0ff; color: #fff; }
+
+/* 컴팩트(모바일) */
+@media (max-width: 640px) {
+    .of-sb-controls { --sb-height: 40px; }
+    .of-sb-input { min-width: 140px; width: 56vw; }
+}

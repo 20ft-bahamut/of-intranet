@@ -1,0 +1,35 @@
+/* =========================
+   공통 테이블 액션 버튼 스타일
+   ========================= */
+td.actions {
+    white-space: nowrap;          /* 줄바꿈 방지 */
+    vertical-align: middle;
+    width: 1%;
+}
+
+td.actions .buttons {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: nowrap;            /* 줄바꿈 절대 금지 */
+    gap: .25rem;
+    margin: 0;
+    vertical-align: middle;
+}
+
+td.actions .button.is-small {
+    padding: .25rem .45rem;
+    line-height: 1.1;
+    height: auto;
+}
+
+td.actions .material-icons {
+    font-size: 18px;
+    line-height: 1;
+}
+
+/* 테이블 공통 셀 정렬 */
+.table td.actions {
+    display: table-cell;
+    vertical-align: middle;
+}

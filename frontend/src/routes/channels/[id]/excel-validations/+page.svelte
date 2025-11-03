@@ -1,59 +1,85 @@
 <script>
+    import { onMount } from 'svelte';
     import { page } from '$app/stores';
-    import { fetchJson } from '$lib/api/client.js';
+    import { fetchJson, qs } from '$lib/api/client.js';
+    import SearchBar from '$lib/components/SearchBar.svelte';
+    import Modal from '$lib/components/Modal.svelte';
     import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+    import { toast } from '$lib/stores/toast.js';
 
-    // 라우트 파라미터
-    $: channelId = $page.params.id;
+    // ===== 파라미터 =====
+    let channelId;
+    $: channelId = Number(($page?.params?.id) ?? 0);
 
-    // 상태
-    let channel = null;
-    let items = [];
+    // ===== 상단 표시용 채널 =====
+    let channel = null; // {id,name,code,...}
+
+    // ===== 목록/검색 =====
+    let items = [];     // 검증 규칙 목록
     let loading = false;
     let error = null;
-    let flash = null; // {type,text}
 
-    // 모달/폼
+    let q = '';         // 검색어(셀/라벨)
+    // 서버가 q 미지원해도 안전: 서버 전체 호출 후 프론트 필터
+
+    // ===== 등록/수정 모달 =====
     let modalOpen = false;
-    let editing = null; // row or null
-    let form = { cell_ref: '', expected_label: '', is_required: true };
+    let editing = null;
     let firstInput;
 
-    // 삭제 확인 모달
+    function emptyForm() {
+        return {
+            cell_ref: '',
+            expected_label: '',
+            is_required: true
+        };
+    }
+    let form = emptyForm();
+    const cellRefRe = /^[A-Z]{1,3}[1-9]\d{0,4}$/;
+
+    // ===== 삭제 확인 =====
     let confirmOpen = false;
     let confirmTarget = null;
     let confirmBusy = false;
 
-    // 유틸
-    function setFlash(type, text, ms = 2600) {
-        flash = { type, text };
-        setTimeout(() => (flash = null), ms);
-    }
-    const CELL_RX = /^[A-Z]{1,3}[1-9]\d{0,4}$/; // A1, B3 등
+    // ===== 초기 로드 =====
+    onMount(async () => {
+        await loadChannel();
+        await load();
+    });
 
-    function validateForm() {
-        const ref = (form.cell_ref || '').trim().toUpperCase();
-        if (!CELL_RX.test(ref)) return '셀 위치는 A1, B3 형식으로 입력하세요.';
-        if (!String(form.expected_label || '').trim()) return '기대 라벨을 입력하세요.';
-        return null;
-    }
-
-    // API
-    async function fetchChannel() {
+    async function loadChannel() {
         const res = await fetchJson(`/channels/${channelId}`);
-        if (!res.ok) throw new Error(res.error || '채널 정보 조회 실패');
-        channel = res.data;
+        if (res.ok) channel = res.data;
     }
-    async function fetchRules() {
-        const res = await fetchJson(`/channels/${channelId}/excel-validations`);
-        if (!res.ok) throw new Error(res.error || '규칙 목록 조회 실패');
-        items = Array.isArray(res.data) ? res.data : [];
-    }
-    async function fetchAll() {
+
+    async function load() {
+        if (!channelId) return;
         loading = true; error = null;
         try {
-            await Promise.all([fetchChannel(), fetchRules()]);
-            setFlash('info', `규칙 ${items.length}개 불러옴`);
+            // 백엔드가 q 미지원해도 일단 전체 받음
+            const res = await fetchJson(`/channels/${channelId}/excel-validations` + qs({ q: q || undefined }));
+            if (!res.ok) throw new Error(res.error || '불러오기 실패');
+            let list = Array.isArray(res.data) ? res.data : [];
+
+            // 프론트 필터 (서버 q 미지원 대비)
+            const s = (q || '').trim().toLowerCase();
+            if (s) {
+                list = list.filter(it =>
+                    (it.cell_ref || '').toLowerCase().includes(s) ||
+                    (it.expected_label || '').toLowerCase().includes(s)
+                );
+            }
+
+            // 정렬: 셀 기준(A1 → A2 → B1 …) 간단히 알파/숫자 분리 정렬
+            items = list.sort((a,b) => {
+                const [ac, ar] = String(a.cell_ref || '').match(/^([A-Z]{1,3})(\d{1,5})$/)?.slice(1) ?? ['Z', '99999'];
+                const [bc, br] = String(b.cell_ref || '').match(/^([A-Z]{1,3})(\d{1,5})$/)?.slice(1) ?? ['Z', '99999'];
+                if (ac === bc) return Number(ar) - Number(br);
+                return ac.localeCompare(bc);
+            });
+
+            toast.info(`검증 규칙 ${items.length}개 불러옴`);
         } catch (e) {
             error = e.message || String(e);
         } finally {
@@ -61,10 +87,10 @@
         }
     }
 
-    // 모달
+    // ===== 모달 =====
     function openNew() {
         editing = null;
-        form = { cell_ref: '', expected_label: '', is_required: true };
+        form = emptyForm();
         modalOpen = true;
         queueMicrotask(() => firstInput?.focus());
     }
@@ -79,16 +105,18 @@
         queueMicrotask(() => firstInput?.focus());
     }
     function closeModal() { modalOpen = false; editing = null; }
-    function onModalKeydown(e) { if (e.key === 'Escape') { e.stopPropagation(); closeModal(); } }
 
-    // 저장/삭제
+    // ===== 저장 =====
     async function save() {
-        const err = validateForm();
-        if (err) return setFlash('warning', err, 3200);
-
+        // 간단 클라 검증
+        const cell = (form.cell_ref || '').trim().toUpperCase();
+        if (!cellRefRe.test(cell)) {
+            toast.danger('셀 참조 형식이 올바르지 않습니다. 예: A1, B3, AA10');
+            return;
+        }
         const payload = {
-            cell_ref: form.cell_ref.trim().toUpperCase(),
-            expected_label: String(form.expected_label).trim(),
+            cell_ref: cell,
+            expected_label: (form.expected_label || '').trim(),
             is_required: !!form.is_required
         };
 
@@ -98,214 +126,203 @@
                 : `/channels/${channelId}/excel-validations`;
             const method = editing ? 'PUT' : 'POST';
             const res = await fetchJson(url, { method, body: JSON.stringify(payload) });
-            if (!res.ok) throw new Error(res.error || '저장 실패');
 
-            setFlash('success', editing ? '규칙을 수정했습니다.' : '규칙을 등록했습니다.');
+            if (!res.ok) {
+                const first = res.errors && Object.values(res.errors)[0]?.[0];
+                toast.danger(first || res.error || '저장 실패');
+                return;
+            }
+            toast.success(editing ? '규칙을 수정했습니다.' : '규칙을 등록했습니다.');
             closeModal();
-            await fetchRules();
+            await load();
         } catch (e) {
-            setFlash('danger', '저장 실패: ' + (e.message || String(e)));
+            toast.danger('저장 실패: ' + (e.message || String(e)));
         }
     }
+
+    // ===== 삭제 =====
     function askRemove(row) { confirmTarget = row; confirmOpen = true; }
     async function reallyRemove(row) {
         try {
             const res = await fetchJson(`/channels/${channelId}/excel-validations/${row.id}`, { method: 'DELETE' });
             if (!res.ok) throw new Error(res.error || '삭제 실패');
-            setFlash('success', '삭제 완료');
-            await fetchRules();
+            toast.success('삭제 완료');
+            await load();
         } catch (e) {
-            setFlash('danger', '삭제 실패: ' + (e.message || String(e)));
+            toast.danger('삭제 실패: ' + (e.message || String(e)));
         }
     }
 
-    // 초기 로드
-    $: fetchAll();
+    // 검색바 이벤트
+    function doSearch(){ load(); }
+    function doReset(){ q=''; load(); }
 </script>
 
 <svelte:head>
-    <title>엑셀 검증 규칙 · 채널 #{channelId} · OF Intranet</title>
-    <meta name="description" content="채널별 엑셀 헤더/셀 위치의 기대 라벨과 필수 여부를 관리합니다." />
+    <title>엑셀 검증 규칙 · OF Intranet</title>
+    <meta name="description" content="채널 엑셀의 헤더/라벨 검증 규칙을 관리합니다." />
 </svelte:head>
 
 <section class="section" aria-labelledby="pageTitle">
     <div class="container">
-        <nav class="breadcrumb" aria-label="breadcrumbs">
-            <ul>
-                <li><a href="/channels">채널 관리</a></li>
-                <li class="is-active"><a aria-current="page">엑셀 검증 규칙</a></li>
-            </ul>
-        </nav>
-
         <header class="mb-4">
             <h1 id="pageTitle" class="title is-4">
                 <span class="material-icons" aria-hidden="true">rule</span>&nbsp;엑셀 검증 규칙
             </h1>
-            <p class="subtitle is-6">
-                채널:
-                {#if channel}
-                    <strong>{channel.name}</strong>
+            {#if channel}
+                <p class="subtitle is-6">
+                    대상 채널: <strong>{channel.name}</strong>
                     <span class="tag is-light ml-2">{channel.code}</span>
-                {:else}
-                    <span class="has-text-grey">로딩 중…</span>
-                {/if}
-            </p>
+                </p>
+            {/if}
         </header>
 
-        {#if flash}
-            <article class="message {flash.type === 'success' ? 'is-success' : flash.type === 'danger' ? 'is-danger' : flash.type === 'warning' ? 'is-warning' : 'is-info'}" aria-live="polite">
-                <div class="message-body">{flash.text}</div>
-            </article>
-        {/if}
         {#if error}
             <article class="message is-danger" aria-live="polite">
                 <div class="message-body"><strong>오류:</strong> {error}</div>
             </article>
         {/if}
 
+        <!-- 도구줄 -->
         <div class="level mb-3" aria-label="도구 모음">
             <div class="level-left">
                 <a class="button" href="/channels">
-                    <span class="material-icons" aria-hidden="true">arrow_back</span>&nbsp;목록으로
+                    <span class="material-icons">arrow_back</span>&nbsp;채널 목록
                 </a>
-            </div>
-            <div class="level-right">
-                <button class="button is-link" type="button" on:click={openNew}>
-                    <span class="material-icons" aria-hidden="true">add</span>&nbsp;규칙 추가
+                <button class="button is-link ml-2" type="button" on:click={openNew}>
+                    <span class="material-icons" aria-hidden="true">add_circle</span>&nbsp;규칙 등록
                 </button>
-                {#if loading}<span class="tag is-info ml-2">불러오는 중…</span>{/if}
-                <span class="tag is-light ml-2">총 {items.length}개</span>
+            </div>
+
+            <div class="level-right" style="gap:.5rem; align-items:center;">
+                <SearchBar
+                        bind:q
+                        placeholder="셀 참조 또는 라벨로 검색 (예: A1, 주문번호)"
+                        on:search={doSearch}
+                        on:reset={doReset}
+                />
+                <span class="tag is-light" aria-live="polite">총 {items.length}개</span>
+                {#if loading}<span class="tag is-info">불러오는 중…</span>{/if}
             </div>
         </div>
 
-        <section aria-labelledby="tableTitle">
-            <h2 id="tableTitle" class="is-sr-only">엑셀 검증 규칙 목록</h2>
-            <div class="table-container" role="region" aria-label="검증 규칙 테이블">
-                <table class="table is-fullwidth is-striped is-hoverable rules-table">
-                    <caption class="is-sr-only">열: 셀 위치, 기대 라벨, 필수여부, 작업</caption>
-                    <thead>
-                    <tr>
-                        <th scope="col">셀 위치</th>
-                        <th scope="col">기대 라벨</th>
-                        <th scope="col">필수</th>
-                        <th scope="col">작업</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    {#if items.length === 0}
-                        <tr><td colspan="4" class="has-text-grey">데이터 없음</td></tr>
-                    {:else}
-                        {#each items as it}
-                            <tr>
-                                <th scope="row"><code>{it.cell_ref}</code></th>
-                                <td>{it.expected_label}</td>
-                                <td>{it.is_required ? '✅' : '—'}</td>
-                                <td class="actions">
-                                    <div class="buttons">
-                                        <button class="button is-info is-small" type="button" title="수정" aria-label="수정" on:click={() => openEdit(it)}>
-                                            <span class="material-icons" aria-hidden="true">edit</span>
-                                        </button>
-                                        <button class="button is-danger is-small" type="button" title="삭제" aria-label="삭제" on:click={() => askRemove(it)}>
-                                            <span class="material-icons" aria-hidden="true">delete</span>
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                        {/each}
-                    {/if}
-                    </tbody>
-                </table>
-            </div>
-        </section>
+        <!-- 목록 -->
+        <div class="table-container" role="region" aria-label="검증 규칙 목록 테이블">
+            <table class="table is-fullwidth is-striped is-hoverable validations-table">
+                <caption class="is-sr-only">
+                    엑셀 검증 규칙 표. 열: ID, 셀, 예상 라벨, 필수여부, 작업
+                </caption>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>셀</th>
+                    <th>예상 라벨</th>
+                    <th>필수</th>
+                    <th>작업</th>
+                </tr>
+                </thead>
+                <tbody>
+                {#if items.length === 0}
+                    <tr><td colspan="5" class="has-text-grey">데이터 없음</td></tr>
+                {:else}
+                    {#each items as it}
+                        <tr>
+                            <th scope="row">{it.id}</th>
+                            <td><span class="tag is-light">{it.cell_ref}</span></td>
+                            <td>{it.expected_label}</td>
+                            <td>{it.is_required ? '예' : '아니오'}</td>
+                            <td class="actions">
+                                <div class="buttons">
+                                    <button class="button is-danger is-small" type="button" on:click={() => askRemove(it)} title="삭제">
+                                        <span class="material-icons">delete</span>
+                                    </button>
+                                    <button class="button is-info is-small" type="button" on:click={() => openEdit(it)} title="수정">
+                                        <span class="material-icons">edit</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    {/each}
+                {/if}
+                </tbody>
+            </table>
+        </div>
     </div>
 </section>
 
-{#if modalOpen}
-    <div class="modal is-active" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalDesc" on:keydown={onModalKeydown}>
-        <div class="modal-background" on:click={closeModal}></div>
-        <div class="modal-card">
-            <header class="modal-card-head">
-                <p id="modalTitle" class="modal-card-title">{editing ? '규칙 수정' : '규칙 추가'}</p>
-                <button class="delete" type="button" aria-label="닫기" on:click={closeModal}></button>
-            </header>
-
-            <section class="modal-card-body">
-                <p id="modalDesc" class="is-sr-only">엑셀 셀 위치와 기대 라벨, 필수 여부를 입력하세요.</p>
-
-                <form on:submit|preventDefault={save} autocomplete="off">
-                    <!-- 셀 위치 -->
+<!-- 등록/수정 모달 (공통 Modal 사용) -->
+<Modal
+        open={modalOpen}
+        title={editing ? '규칙 수정' : '규칙 등록'}
+        ariaDescription="셀 참조와 라벨을 입력하세요."
+        width={560}
+        maxHeight={520}
+        draggable={true}
+        on:close={closeModal}
+>
+    <svelte:fragment slot="body">
+        <form on:submit|preventDefault={save} autocomplete="off">
+            <div class="columns is-variable is-2">
+                <div class="column is-4">
                     <div class="field">
-                        <label class="label" for="f-ref">셀 위치</label>
+                        <label class="label" for="v-cell">셀 참조</label>
                         <div class="control">
-                            <input id="f-ref" class="input" type="text" placeholder="예: A1"
-                                   bind:value={form.cell_ref}
-                                   required aria-required="true" bind:this={firstInput} />
+                            <input id="v-cell" class="input" type="text" bind:value={form.cell_ref}
+                                   required aria-required="true" maxlength="6" placeholder="예: A1"
+                                   bind:this={firstInput} on:blur={() => form.cell_ref = (form.cell_ref||'').toUpperCase()} />
                         </div>
-                        <p class="help">A1, B3 같은 표기만 허용됩니다.</p>
+                        <p class="help">형식: A1, B3, AA10 (정규식: ^[A-Z]{1,3}[1-9]\d{0,4}$)</p>
                     </div>
-
-                    <!-- 기대 라벨 -->
+                </div>
+                <div class="column">
                     <div class="field">
-                        <label class="label" for="f-label">기대 라벨</label>
+                        <label class="label" for="v-label">예상 라벨</label>
                         <div class="control">
-                            <input id="f-label" class="input" type="text" placeholder="예: 주문번호"
-                                   bind:value={form.expected_label}
-                                   required aria-required="true" />
+                            <input id="v-label" class="input" type="text" bind:value={form.expected_label}
+                                   required aria-required="true" placeholder="예: 주문번호" />
                         </div>
                     </div>
+                </div>
+            </div>
 
-                    <!-- 필수 여부 -->
-                    <div class="field">
-                        <label class="checkbox" for="f-required">
-                            <input id="f-required" type="checkbox" bind:checked={form.is_required} />
-                            필수 항목
-                        </label>
-                    </div>
+            <div class="field">
+                <label class="checkbox" for="v-required">
+                    <input id="v-required" type="checkbox" bind:checked={form.is_required} />
+                    <span class="ml-1">필수 라벨</span>
+                </label>
+            </div>
+        </form>
+    </svelte:fragment>
 
-                    <!-- 액션 -->
-                    <div class="field is-grouped">
-                        <div class="control">
-                            <button class="button is-link" type="submit">
-                                <span class="material-icons" aria-hidden="true">save</span>&nbsp;저장
-                            </button>
-                        </div>
-                        <div class="control">
-                            <button class="button" type="button" on:click={closeModal}>취소</button>
-                        </div>
-                    </div>
-                </form>
-            </section>
-
-            <footer class="modal-card-foot">
-                <p class="is-size-7 has-text-grey">필수 체크 해제 시 존재 여부만 확인합니다.</p>
-            </footer>
+    <svelte:fragment slot="footer">
+        <div class="field is-grouped">
+            <div class="control">
+                <button class="button is-link" type="button" on:click={save}>
+                    <span class="material-icons">save</span>&nbsp;저장
+                </button>
+            </div>
+            <div class="control">
+                <button class="button" type="button" on:click={closeModal}>취소</button>
+            </div>
         </div>
-    </div>
-{/if}
+    </svelte:fragment>
+</Modal>
 
-<!-- 삭제 확인 모달 -->
+<!-- 삭제 확인 (드래그 가능) -->
 <ConfirmModal
         open={confirmOpen}
         title="규칙 삭제"
-        message={`셀 <code>${confirmTarget?.cell_ref ?? ''}</code> 규칙을 삭제할까요?`}
-        confirmText="삭제"
+        message={`규칙 <strong>#${confirmTarget?.id ?? ''}</strong> 을(를) 삭제하시겠습니까?`}
+        confirmText="영구 삭제"
         cancelText="취소"
         confirmClass="is-danger"
         busy={confirmBusy}
-        on:confirm={async () => {
-    confirmBusy = true;
-    await reallyRemove(confirmTarget);
-    confirmBusy = false;
-    confirmOpen = false;
-    confirmTarget = null;
-  }}
+        draggable={true}
+        on:confirm={async () => { confirmBusy = true; await reallyRemove(confirmTarget); confirmBusy = false; confirmOpen = false; confirmTarget = null; }}
         on:cancel={() => { confirmOpen = false; confirmTarget = null; }}
 />
 
 <style>
-    .rules-table td, .rules-table th { padding: .45rem .6rem; }
-    td.actions { white-space: nowrap; vertical-align: middle; width: 1%; }
-    td.actions .buttons { display: inline-flex; flex-wrap: nowrap; gap: .25rem; margin: 0; }
-    td.actions .button.is-small { padding: .25rem .45rem; line-height: 1.1; height: auto; }
-    td.actions .material-icons { font-size: 18px; line-height: 1; }
+    /* 이 페이지 전용: 표 패딩만 살짝 컴팩트 */
+    .validations-table td, .validations-table th { padding: .4rem .6rem; }
 </style>

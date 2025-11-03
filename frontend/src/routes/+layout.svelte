@@ -1,7 +1,9 @@
 <script>
     import { page } from '$app/stores';
     let navOpen = false;
+    import { toasts } from '$lib/stores/toast.js';
 
+    $: list = $toasts;
     // 현재 경로 활성화 표시
     $: current = $page.url.pathname;
     $: isHome = $page.url.pathname === '/';
@@ -131,6 +133,14 @@
     <slot />
 </main>
 
+<div class="toast-stack" aria-live="polite">
+    {#each list as t (t.id)}
+        <article class="message {t.type && `is-${t.type}`}" style="margin:.5rem 0;">
+            <div class="message-body">{t.text}</div>
+        </article>
+    {/each}
+</div>
+
 <!-- 푸터 -->
 <footer class="footer" role="contentinfo">
     <div class="content has-text-centered">
@@ -139,3 +149,10 @@
         </p>
     </div>
 </footer>
+
+<style>
+    @import '$lib/styles/_table.css';
+    @import '$lib/styles/_searchbar.css';
+    @import '$lib/styles/_toast.css';
+    @import '$lib/styles/_font.css';
+</style>

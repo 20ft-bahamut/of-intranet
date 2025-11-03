@@ -8,83 +8,60 @@ use App\Http\Requests\UpdateProductNameMappingRequest;
 use App\Http\Resources\ProductNameMappingResource;
 use App\Models\Product;
 use App\Models\ProductNameMapping;
-use Illuminate\Http\Request;
-
+use App\Support\ApiResponse;
 
 class ProductNameMappingController extends Controller
 {
-    // 목록: GET /api/v1/products/{product}/product-name-mappings
-    public function index(Request $req, Product $product)
+    /**
+     * GET /api/v1/products/{product}/product-name-mappings
+     */
+    public function index(Product $product)
     {
-        $q = ProductNameMapping::where('product_id', $product->id)
-            ->when($req->filled('channel_id'), fn($qq) =>
-            $qq->where('channel_id', (int)$req->integer('channel_id')))
-            ->when($req->filled('q'), function($qq) use ($req){
-                $kw = $req->string('q');
-                $qq->where(function($w) use ($kw){
-                    $w->where('listing_title','like',"%{$kw}%")
-                        ->orWhere('option_title','like',"%{$kw}%");
-                });
-            })
-            ->orderByDesc('id');
+        $list = $product->nameMappings()
+            ->latest('id')
+            ->get(['id','channel_id','product_id','listing_title','option_title','description','created_at','updated_at']);
 
-        $per = (int)$req->integer('per_page', 20);
-        return ProductNameMappingResource::collection($q->paginate($per));
+        return ApiResponse::success(ProductNameMappingResource::collection($list));
     }
 
-    // 생성: POST /api/v1/products/{product}/product-name-mappings
-    public function store(StoreProductNameMappingRequest $req, Product $product)
+    /**
+     * POST /api/v1/products/{product}/product-name-mappings
+     * body: channel_id, listing_title, option_title, description?
+     */
+    public function store(Product $product, StoreProductNameMappingRequest $request)
     {
-        $data = $req->validated();
-        $data['product_id'] = $product->id;
+        $data = $request->validated() + ['product_id' => $product->id];
+        $row  = $product->nameMappings()->create($data);
 
-        // 유니크 중복 체크: (channel_id, product_id, listing_title, option_title)
-        $dup = ProductNameMapping::where('channel_id', $data['channel_id'])
-            ->where('product_id', $product->id)
-            ->where('listing_title', $data['listing_title'])
-            ->where('option_title', $data['option_title'] ?? null)
-            ->exists();
-        if ($dup) return response()->json(['message'=>'duplicate_mapping'], 422);
-
-        $row = ProductNameMapping::create($data);
-        return (new ProductNameMappingResource($row))->response()->setStatusCode(201);
+        return ApiResponse::success(ProductNameMappingResource::make($row), '저장되었습니다.', 201);
     }
 
-    // 수정: PUT/PATCH /api/v1/products/{product}/product-name-mappings/{mapping}
-    public function update(UpdateProductNameMappingRequest $req, Product $product, ProductNameMapping $mapping)
+    /**
+     * PUT /api/v1/products/{product}/product-name-mappings/{mapping}
+     */
+    public function update(Product $product, ProductNameMapping $mapping, UpdateProductNameMappingRequest $request)
     {
-        if ($mapping->product_id !== $product->id) {
-            return response()->json(['message'=>'product_mismatch'], 404);
+        // URL의 product와 레코드의 product_id 일치 검증
+        if ((int)$mapping->product_id !== (int)$product->id) {
+            return ApiResponse::fail('not_found', '리소스를 찾을 수 없습니다.', 404);
         }
 
-        $payload = $req->validated();
+        $mapping->update($request->validated());
 
-        // listing/option/channel이 바뀌면 유니크 재검사
-        if (isset($payload['listing_title']) || array_key_exists('option_title',$payload) || isset($payload['channel_id'])) {
-            $lt = $payload['listing_title'] ?? $mapping->listing_title;
-            $ot = array_key_exists('option_title',$payload) ? $payload['option_title'] : $mapping->option_title;
-            $ch = $payload['channel_id'] ?? $mapping->channel_id;
-
-            $dup = ProductNameMapping::where('channel_id',$ch)
-                ->where('product_id', $product->id)
-                ->where('listing_title',$lt)
-                ->where('option_title',$ot)
-                ->where('id','<>',$mapping->id)
-                ->exists();
-            if ($dup) return response()->json(['message'=>'duplicate_mapping'], 422);
-        }
-
-        $mapping->fill($payload)->save();
-        return new ProductNameMappingResource($mapping);
+        return ApiResponse::success(ProductNameMappingResource::make($mapping->refresh()), '수정되었습니다.');
     }
 
-    // 삭제: DELETE /api/v1/products/{product}/product-name-mappings/{mapping}
+    /**
+     * DELETE /api/v1/products/{product}/product-name-mappings/{mapping}
+     */
     public function destroy(Product $product, ProductNameMapping $mapping)
     {
-        if ($mapping->product_id !== $product->id) {
-            return response()->json(['message'=>'product_mismatch'], 404);
+        if ((int)$mapping->product_id !== (int)$product->id) {
+            return ApiResponse::fail('not_found', '리소스를 찾을 수 없습니다.', 404);
         }
+
         $mapping->delete();
-        return response()->json(['message'=>'deleted'], 200);
+
+        return ApiResponse::success(null, '삭제되었습니다.');
     }
 }

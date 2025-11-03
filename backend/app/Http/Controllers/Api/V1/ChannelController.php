@@ -7,64 +7,73 @@ use App\Http\Requests\StoreChannelRequest;
 use App\Http\Requests\UpdateChannelRequest;
 use App\Http\Resources\ChannelResource;
 use App\Models\Channel;
-use Illuminate\Http\Request;
+use App\Support\ApiResponse;
 
 class ChannelController extends Controller
 {
-    // 목록 (페이지네이션)
-    public function index(Request $request)
+    public function index()
     {
-        $query = Channel::query()
-            ->when($request->filled('q'), function ($q) use ($request) {
-                $kw = $request->string('q');
-                $q->where(function ($w) use ($kw) {
-                    $w->where('name','like',"%{$kw}%")
-                        ->orWhere('code','like',"%{$kw}%");
-                });
-            })
-            ->when($request->filled('active'), function($q) use ($request) {
-                $q->where('is_active', (bool) $request->boolean('active'));
-            })
-            ->orderBy('id','desc');
+        $q = (string) request('q', '');
+        $isActive = request()->has('is_active') ? request('is_active') : null;
 
-        $perPage = (int) $request->integer('per_page', 20);
-        return ChannelResource::collection($query->paginate($perPage));
+        $query = Channel::query();
+
+        if ($q !== '') {
+            $query->where(function ($w) use ($q) {
+                $w->where('name', 'like', "%{$q}%")
+                    ->orWhere('code', 'like', "%{$q}%");
+            });
+        }
+
+        if ($isActive !== null && $isActive !== '') {
+            $query->where('is_active', filter_var($isActive, FILTER_VALIDATE_BOOLEAN));
+        }
+
+        $list = $query->orderByDesc('id')->get();
+
+        return ApiResponse::success(ChannelResource::collection($list));
     }
 
-    // 단건 조회
     public function show(Channel $channel)
     {
-        return new ChannelResource($channel);
+        return ApiResponse::success(ChannelResource::make($channel));
     }
 
-    // 생성
     public function store(StoreChannelRequest $request)
     {
         $data = $request->validated();
-        // 기본값 보정
-        $data['is_excel_encrypted'] = $data['is_excel_encrypted'] ?? false;
-        $data['excel_data_start_row'] = $data['excel_data_start_row'] ?? 2;
-        $data['is_active'] = $data['is_active'] ?? true;
+
+        // 선제적 중복 체크 (DB 제약도 함께 있어야 함)
+        if (Channel::where('code', $data['code'])->exists()) {
+            return ApiResponse::fail('conflict', '채널 코드가 이미 존재합니다.', 409);
+        }
 
         $channel = Channel::create($data);
-        return (new ChannelResource($channel))
-            ->response()
-            ->setStatusCode(201);
+
+        return ApiResponse::success(ChannelResource::make($channel), '저장되었습니다.', 201);
     }
 
-    // 수정
     public function update(UpdateChannelRequest $request, Channel $channel)
     {
-        $channel->fill($request->validated());
-        $channel->save();
+        $data = $request->validated();
 
-        return new ChannelResource($channel);
+        if (isset($data['code'])) {
+            $dup = Channel::where('id', '!=', $channel->id)
+                ->where('code', $data['code'])
+                ->exists();
+            if ($dup) {
+                return ApiResponse::fail('conflict', '채널 코드가 이미 존재합니다.', 409);
+            }
+        }
+
+        $channel->update($data);
+
+        return ApiResponse::success(ChannelResource::make($channel->refresh()), '수정되었습니다.');
     }
 
-    // 삭제
     public function destroy(Channel $channel)
     {
         $channel->delete();
-        return response()->json(['message' => 'deleted'], 200);
+        return ApiResponse::success(null, '삭제되었습니다.');
     }
 }

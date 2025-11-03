@@ -7,61 +7,81 @@ use App\Http\Requests\StoreProductRequest;
 use App\Http\Requests\UpdateProductRequest;
 use App\Http\Resources\ProductResource;
 use App\Models\Product;
-use Illuminate\Http\Request;
+use App\Support\ApiResponse;
 
 class ProductController extends Controller
 {
-    // 목록(검색/페이지네이션)
-    public function index(Request $request)
+    /**
+     * GET /api/v1/products
+     * ?q=검색어(name/code)
+     * ?is_active=1|0 (선택)
+     */
+    public function index()
     {
-        $query = Product::query()
-            ->when($request->filled('q'), function ($q) use ($request) {
-                $kw = $request->string('q');
-                $q->where(function ($w) use ($kw) {
-                    $w->where('name','like',"%{$kw}%")
-                        ->orWhere('code','like',"%{$kw}%")
-                        ->orWhere('spec','like',"%{$kw}%");
-                });
-            })
-            ->when($request->filled('active'), function ($q) use ($request) {
-                $q->where('is_active', (bool) $request->boolean('active'));
-            })
-            ->orderByDesc('id');
+        $q = (string) request('q', '');
+        $isActive = request()->has('is_active') ? request('is_active') : null;
 
-        $perPage = (int) $request->integer('per_page', 20);
-        return ProductResource::collection($query->paginate($perPage));
+        $query = Product::query();
+
+        if ($q !== '') {
+            $query->where(function ($w) use ($q) {
+                $w->where('name','like',"%{$q}%")
+                    ->orWhere('code','like',"%{$q}%");
+            });
+        }
+
+        if ($isActive !== null && $isActive !== '') {
+            $query->where('is_active', filter_var($isActive, FILTER_VALIDATE_BOOLEAN));
+        }
+
+        $list = $query->orderByDesc('id')->get();
+
+        return ApiResponse::success(ProductResource::collection($list));
     }
 
-    // 단건 조회
+    /**
+     * GET /api/v1/products/{product}
+     */
     public function show(Product $product)
     {
-        return new ProductResource($product);
+        return ApiResponse::success(ProductResource::make($product));
     }
 
-    // 생성
+    /**
+     * POST /api/v1/products
+     * body: name, code, max_merge_qty, spec?, description?, is_active?
+     */
     public function store(StoreProductRequest $request)
     {
-        $data = $request->validated();
-        $data['is_active'] = $data['is_active'] ?? true;
+        $product = Product::create($request->validated());
 
-        $product = Product::create($data);
-        return (new ProductResource($product))
-            ->response()
-            ->setStatusCode(201);
+        return ApiResponse::success(
+            ProductResource::make($product),
+            '저장되었습니다.',
+            201
+        );
     }
 
-    // 수정
+    /**
+     * PUT /api/v1/products/{product}
+     */
     public function update(UpdateProductRequest $request, Product $product)
     {
-        $product->fill($request->validated());
-        $product->save();
-        return new ProductResource($product);
+        $product->update($request->validated());
+
+        return ApiResponse::success(
+            ProductResource::make($product->refresh()),
+            '수정되었습니다.'
+        );
     }
 
-    // 삭제
+    /**
+     * DELETE /api/v1/products/{product}
+     */
     public function destroy(Product $product)
     {
         $product->delete();
-        return response()->json(['message' => 'deleted'], 200);
+
+        return ApiResponse::success(null, '삭제되었습니다.');
     }
 }

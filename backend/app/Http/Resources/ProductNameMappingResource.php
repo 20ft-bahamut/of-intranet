@@ -15,8 +15,8 @@ class ProductNameMappingResource extends JsonResource
             'listing_title' => $this->listing_title,
             'option_title'  => $this->option_title,
             'description'   => $this->description,
-            'created_at'    => optional($this->created_at)->toISOString(),
-            'updated_at'    => optional($this->updated_at)->toISOString(),
+            'created_at'    => optional($this->created_at)->toIso8601String(),
+            'updated_at'    => optional($this->updated_at)->toIso8601String(),
         ];
     }
 }

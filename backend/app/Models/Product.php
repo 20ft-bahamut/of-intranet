@@ -7,13 +7,17 @@ use Illuminate\Database\Eloquent\Model;
 class Product extends Model
 {
     protected $fillable = [
-        'name','code','max_merge_qty','spec','description','is_active',
+        'name', 'code', 'max_merge_qty', 'spec', 'description', 'is_active',
     ];
 
     protected $casts = [
-        'max_merge_qty' => 'integer',
         'is_active'     => 'boolean',
+        'max_merge_qty' => 'integer',
     ];
 
-    public $timestamps = true;
+    public function nameMappings()
+    {
+        return $this->hasMany(\App\Models\ProductNameMapping::class);
+    }
+
 }

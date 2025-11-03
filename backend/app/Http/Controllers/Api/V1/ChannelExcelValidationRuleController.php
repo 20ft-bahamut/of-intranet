@@ -8,76 +8,57 @@ use App\Http\Requests\UpdateChannelExcelValidationRuleRequest;
 use App\Http\Resources\ChannelExcelValidationRuleResource;
 use App\Models\Channel;
 use App\Models\ChannelExcelValidationRule;
-use Illuminate\Http\Request;
+use App\Support\ApiResponse;
 
 class ChannelExcelValidationRuleController extends Controller
 {
-    // 목록(현재값 보기) /api/v1/channels/{channel}/excel-validations
     public function index(Channel $channel)
     {
-        $rules = ChannelExcelValidationRule::where('channel_id', $channel->id)
-            ->orderBy('cell_ref')
-            ->get();
+        $list = $channel->excelValidationRules()
+            ->orderBy('id', 'asc')
+            ->get(['id','channel_id','cell_ref','expected_label','is_required','created_at','updated_at']);
 
-        return ChannelExcelValidationRuleResource::collection($rules);
+        return ApiResponse::success(ChannelExcelValidationRuleResource::collection($list));
     }
 
-    // 쓰기(생성) /api/v1/channels/{channel}/excel-validations
-    public function store(StoreChannelExcelValidationRuleRequest $request, Channel $channel)
+    public function store(Channel $channel, StoreChannelExcelValidationRuleRequest $request)
     {
-        $data = $request->validated();
-        $data['channel_id']  = $channel->id;
-        $data['is_required'] = $data['is_required'] ?? true;
+        $data = $request->validated() + ['channel_id' => $channel->id];
 
-        // 동일 cell_ref 중복 방지(테이블에서도 UNIQUE라면 try-catch로 처리 가능)
-        $exists = ChannelExcelValidationRule::where('channel_id',$channel->id)
-            ->where('cell_ref',$data['cell_ref'])->exists();
-        if ($exists) {
-            return response()->json([
-                'message' => '이미 존재하는 셀 위치입니다.'
-            ], 422);
-        }
+        $row = $channel->excelValidationRules()->create($data);
 
-        $rule = ChannelExcelValidationRule::create($data);
-        return (new ChannelExcelValidationRuleResource($rule))
-            ->response()
-            ->setStatusCode(201);
+        return ApiResponse::success(
+            ChannelExcelValidationRuleResource::make($row),
+            '저장되었습니다.',
+            201
+        );
     }
 
-    // 수정 /api/v1/channels/{channel}/excel-validations/{rule}
-    public function update(UpdateChannelExcelValidationRuleRequest $request, Channel $channel, ChannelExcelValidationRule $rule)
-    {
-        // 채널 소속 검증
-        if ($rule->channel_id !== $channel->id) {
-            return response()->json(['message' => '채널 불일치'], 404);
+    public function update(
+        Channel $channel,
+        ChannelExcelValidationRule $rule,
+        UpdateChannelExcelValidationRuleRequest $request
+    ) {
+        if ((int)$rule->channel_id !== (int)$channel->id) {
+            return ApiResponse::fail('not_found', '리소스를 찾을 수 없습니다.', 404);
         }
 
-        $payload = $request->validated();
+        $rule->update($request->validated());
 
-        // cell_ref를 수정하려는 경우, 중복 방지
-        if (isset($payload['cell_ref'])) {
-            $dup = ChannelExcelValidationRule::where('channel_id',$channel->id)
-                ->where('cell_ref',$payload['cell_ref'])
-                ->where('id','<>',$rule->id)
-                ->exists();
-            if ($dup) {
-                return response()->json(['message' => '이미 존재하는 셀 위치입니다.'], 422);
-            }
-        }
-
-        $rule->fill($payload);
-        $rule->save();
-
-        return new ChannelExcelValidationRuleResource($rule);
+        return ApiResponse::success(
+            ChannelExcelValidationRuleResource::make($rule->refresh()),
+            '수정되었습니다.'
+        );
     }
 
-    // 삭제 /api/v1/channels/{channel}/excel-validations/{rule}
     public function destroy(Channel $channel, ChannelExcelValidationRule $rule)
     {
-        if ($rule->channel_id !== $channel->id) {
-            return response()->json(['message' => '채널 불일치'], 404);
+        if ((int)$rule->channel_id !== (int)$channel->id) {
+            return ApiResponse::fail('not_found', '리소스를 찾을 수 없습니다.', 404);
         }
+
         $rule->delete();
-        return response()->json(['message' => 'deleted'], 200);
+
+        return ApiResponse::success(null, '삭제되었습니다.');
     }
 }

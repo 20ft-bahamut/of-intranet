@@ -14,8 +14,8 @@ class ChannelExcelValidationRuleResource extends JsonResource
             'cell_ref'       => $this->cell_ref,
             'expected_label' => $this->expected_label,
             'is_required'    => (bool) $this->is_required,
-            'created_at'     => optional($this->created_at)->toISOString(),
-            'updated_at'     => optional($this->updated_at)->toISOString(),
+            'created_at'     => optional($this->created_at)->toIso8601String(),
+            'updated_at'     => optional($this->updated_at)->toIso8601String(),
         ];
     }
 }

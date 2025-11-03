@@ -11,17 +11,30 @@ class StoreChannelExcelValidationRuleRequest extends FormRequest
     public function rules(): array
     {
         return [
-            // 채널은 라우트에서 받음
-            'cell_ref'       => ['required','regex:/^[A-Z]{1,3}[1-9][0-9]*$/'], // A1 ~ ZZZ999...
-            'expected_label' => ['required','string','max:100'],
-            'is_required'    => ['sometimes','boolean'],
+            'cell_ref'       => ['required','string','regex:/^[A-Z]{1,3}[1-9]\d{0,4}$/'],
+            'expected_label' => ['required','string','max:150'],
+            'is_required'    => ['required','boolean'],
         ];
+    }
+
+    public function prepareForValidation(): void
+    {
+        if ($this->has('cell_ref')) {
+            $this->merge(['cell_ref' => strtoupper(trim((string)$this->input('cell_ref')))]);
+        }
+        if ($this->has('is_required')) {
+            $this->merge(['is_required' => filter_var($this->input('is_required'), FILTER_VALIDATE_BOOLEAN)]);
+        }
     }
 
     public function messages(): array
     {
         return [
-            'cell_ref.regex' => '셀 위치는 대문자 열 + 숫자 행(A1 형태)여야 합니다.',
+            'cell_ref.required'       => '셀 위치를 입력하세요. (예: A1)',
+            'cell_ref.regex'          => '셀 위치 형식이 올바르지 않습니다. (예: A1, AB10)',
+            'expected_label.required' => '기대 라벨명을 입력하세요.',
+            'is_required.required'    => '필수 여부를 지정하세요.',
+            'is_required.boolean'     => '필수 여부 값이 올바르지 않습니다.',
         ];
     }
 }

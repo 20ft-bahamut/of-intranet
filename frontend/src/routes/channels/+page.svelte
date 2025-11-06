@@ -211,7 +211,7 @@
                                 </label>
                             </td>
                             <td class="actions">
-                                <div class="buttons">
+                                <div class="buttons no-wrap">
                                     <button class="button is-danger is-small" type="button" on:click={() => askRemove(it)} title="삭제" aria-label="삭제">
                                         <span class="material-icons" aria-hidden="true">delete</span>
                                     </button>
@@ -223,6 +223,10 @@
                                     </a>
                                     <a class="button is-link is-light is-small" href={`/channels/${it.id}/excel-transform`} title="엑셀 변환 룰" aria-label="엑셀 변환 룰">
                                         <span class="material-icons" aria-hidden="true">sync_alt</span>
+                                    </a>
+                                    <!-- ✅ 신규: 필드 매핑 진입 -->
+                                    <a class="button is-primary is-light is-small" href={`/channels/${it.id}/field-mappings`} title="필드 매핑" aria-label="필드 매핑">
+                                        <span class="material-icons" aria-hidden="true">view_column</span>
                                     </a>
                                 </div>
                             </td>

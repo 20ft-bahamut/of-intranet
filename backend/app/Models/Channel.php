@@ -9,8 +9,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Channel extends Model
 {
     protected $fillable = [
-        'code','name','is_excel_encrypted','excel_data_start_row','is_active'
+        'name','code','is_excel_encrypted','excel_data_start_row','is_active',
+        'default_excel_password',
     ];
+
     // 엑셀 변환 프로필 (채널당 1건)
     public function excelTransformProfile(): HasOne
     {
@@ -22,4 +24,10 @@ class Channel extends Model
     {
         return $this->hasMany(ChannelExcelValidationRule::class);
     }
+
+    public function excelFieldMappings() // 1:N
+    {
+        return $this->hasMany(\App\Models\ChannelExcelFieldMapping::class);
+    }
+
 }

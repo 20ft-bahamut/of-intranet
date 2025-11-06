@@ -149,10 +149,8 @@
         </p>
     </div>
 </footer>
-
 <style>
     @import '$lib/styles/_table.css';
     @import '$lib/styles/_searchbar.css';
-    @import '$lib/styles/_toast.css';
-    @import '$lib/styles/_font.css';
+    @import '$lib/styles/_helper.css';
 </style>

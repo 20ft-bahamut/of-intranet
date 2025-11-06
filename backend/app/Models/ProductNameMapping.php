@@ -3,18 +3,21 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ProductNameMapping extends Model
 {
     protected $fillable = [
-        'channel_id', 'product_id', 'listing_title', 'option_title', 'description',
+        'product_id','channel_id','listing_title','option_title','description'
     ];
 
-    protected $casts = [
-        'channel_id' => 'integer',
-        'product_id' => 'integer',
-    ];
+    public function product(): BelongsTo
+    {
+        return $this->belongsTo(Product::class);
+    }
 
-    public function channel(){ return $this->belongsTo(Channel::class); }
-    public function product(){ return $this->belongsTo(Product::class); }
+    public function channel(): BelongsTo
+    {
+        return $this->belongsTo(Channel::class);
+    }
 }

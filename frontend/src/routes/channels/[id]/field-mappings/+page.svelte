@@ -34,13 +34,15 @@
     let modalOpen = false;
     let editing = null;
     let form = emptyForm();
+    let optionsText = ''; // options JSON textarea
     let firstInput;
 
     function emptyForm() {
         return {
-            cell_ref: '',
-            expected_label: '',
-            is_required: true
+            field_key: '',
+            selector_type: 'col_ref', // col_ref|header_text|regex|expr
+            selector_value: '',
+            options: null
         };
     }
 
@@ -49,19 +51,12 @@
     let confirmTarget = null;
     let confirmBusy = false;
 
-    // ===== 클라 검증 =====
-    const CELL_RE = /^[A-Z]{1,3}[1-9]\d{0,4}$/; // 예: A1, B3, AA10, ABC99999
-
-    function normalizeCellRef(v) {
-        return (v || '').toString().trim().toUpperCase();
-    }
-
     // ===== 데이터 로드 =====
     async function loadList() {
         if (!channelId) return;
         loading = true; error = null;
         try {
-            const res = await fetchJson(`/channels/${channelId}/excel-validations` + qs({ q: q || undefined }));
+            const res = await fetchJson(`/channels/${channelId}/field-mappings` + qs({ q: q || undefined }));
             if (!res.ok) throw new Error(res.error || '불러오기 실패');
             items = Array.isArray(res.data) ? res.data : [];
             total = items.length;
@@ -81,6 +76,7 @@
     function openNew() {
         editing = null;
         form = emptyForm();
+        optionsText = '';
         modalOpen = true;
         queueMicrotask(() => firstInput?.focus());
     }
@@ -88,10 +84,12 @@
     function openEdit(row) {
         editing = row;
         form = {
-            cell_ref: row.cell_ref ?? '',
-            expected_label: row.expected_label ?? '',
-            is_required: !!row.is_required
+            field_key: row.field_key,
+            selector_type: row.selector_type,
+            selector_value: row.selector_value,
+            options: row.options ?? null
         };
+        optionsText = row.options ? JSON.stringify(row.options, null, 2) : '';
         modalOpen = true;
         queueMicrotask(() => firstInput?.focus());
     }
@@ -102,26 +100,41 @@
     }
 
     // ===== 저장 =====
+    function normalizeFieldKey(s) {
+        return (s || '').trim().toLowerCase();
+    }
+    function parseOptions(text) {
+        const t = (text || '').trim();
+        if (!t) return null;
+        try {
+            const obj = JSON.parse(t);
+            if (obj && typeof obj === 'object') return obj;
+            throw new Error('JSON은 객체여야 합니다.');
+        } catch (e) {
+            throw new Error('options JSON 파싱 실패: ' + e.message);
+        }
+    }
+
     async function save() {
         const payload = {
-            cell_ref: normalizeCellRef(form.cell_ref),
-            expected_label: (form.expected_label || '').trim(),
-            is_required: !!form.is_required
+            field_key: normalizeFieldKey(form.field_key),
+            selector_type: form.selector_type,
+            selector_value: (form.selector_value || '').trim(),
+            options: null
         };
-
-        if (!CELL_RE.test(payload.cell_ref)) {
-            toast.danger('cell_ref 형식이 올바르지 않습니다. 예: A1, B3, AA10');
+        try {
+            payload.options = parseOptions(optionsText); // 비어 있으면 null
+        } catch (e) {
+            toast.danger(e.message);
             return;
         }
-        if (!payload.expected_label) {
-            toast.danger('expected_label을 입력하세요.');
-            return;
-        }
+        if (!payload.field_key) { toast.danger('field_key를 입력하세요.'); return; }
+        if (!payload.selector_value) { toast.danger('selector_value를 입력하세요.'); return; }
 
         try {
             const url = editing
-                ? `/channels/${channelId}/excel-validations/${editing.id}`
-                : `/channels/${channelId}/excel-validations`;
+                ? `/channels/${channelId}/field-mappings/${editing.id}`
+                : `/channels/${channelId}/field-mappings`;
             const method = editing ? 'PUT' : 'POST';
             const res = await fetchJson(url, { method, body: JSON.stringify(payload) });
 
@@ -130,9 +143,10 @@
                 toast.danger(first || res.error || '저장 실패');
                 return;
             }
-            toast.success(editing ? '검증 규칙을 수정했습니다.' : '검증 규칙을 등록했습니다.');
+            toast.success(editing ? '필드 매핑을 수정했습니다.' : '필드 매핑을 등록했습니다.');
             closeModal();
             await loadList();
+            await initChannel(true); // 필요시 상단 채널정보 갱신
         } catch (e) {
             toast.danger('저장 실패: ' + (e.message || String(e)));
         }
@@ -144,7 +158,7 @@
         if (!confirmTarget) return;
         confirmBusy = true;
         try {
-            const res = await fetchJson(`/channels/${channelId}/excel-validations/${confirmTarget.id}`, { method: 'DELETE' });
+            const res = await fetchJson(`/channels/${channelId}/field-mappings/${confirmTarget.id}`, { method: 'DELETE' });
             if (!res.ok) throw new Error(res.error || '삭제 실패');
             toast.success('삭제 완료');
             await loadList();
@@ -160,21 +174,32 @@
     // ===== 검색 이벤트 =====
     function doSearch(){ loadList(); }
     function doReset(){ q=''; loadList(); }
+
+    // ===== expr 스니펫 =====
+    const exprSnippets = [
+        { label: 'CONCAT A-B', value: '`${A}-${B}`' },
+        { label: 'SPLIT C "-" 앞', value: 'SPLIT(${C}, "-", 0)' },
+        { label: 'SPLIT C "-" 뒤', value: 'SPLIT(${C}, "-", 1)' },
+        { label: 'TRIM X', value: 'TRIM(${X})' },
+        { label: 'DIGITS X', value: 'DIGITS(${X})' },
+        { label: 'COALESCE X|Y', value: 'COALESCE(${X}, ${Y})' }
+    ];
+    function useExprSnippet(s){ form.selector_type = 'expr'; form.selector_value = s; }
 </script>
 
 <svelte:head>
-    <title>엑셀 검증 규칙 · 채널 {channel ? channel.name : `#${channelId}`} · OF Intranet</title>
-    <meta name="description" content="채널별 엑셀 검증 규칙을 관리합니다." />
+    <title>필드 매핑 · 채널 {channel ? channel.name : `#${channelId}`} · OF Intranet</title>
+    <meta name="description" content="채널별 엑셀 컬럼과 표준 필드의 매핑을 관리합니다." />
 </svelte:head>
 
 <section class="section" aria-labelledby="pageTitle">
     <div class="container">
         <header class="mb-4">
             <h1 id="pageTitle" class="title is-4">
-                <span class="material-icons" aria-hidden="true">rule</span>&nbsp;엑셀 검증 규칙
+                <span class="material-icons" aria-hidden="true">view_column</span>&nbsp;필드 매핑
             </h1>
 
-            <!-- 대상 채널 표시 (공통 스타일) -->
+            <!-- 대상 채널 표시 -->
             <p class="subtitle is-6">
                 대상 채널:&nbsp;
                 {#if channelLoading}
@@ -193,7 +218,7 @@
                     <li><a href="/channels">채널 관리</a></li>
                     <li class="is-active">
                         <a aria-current="page">
-                            {channel ? channel.name : `채널 ${channelId}`} · 엑셀 검증 규칙
+                            {channel ? channel.name : `채널 ${channelId}`} · 필드 매핑
                         </a>
                     </li>
                 </ul>
@@ -210,10 +235,10 @@
         <div class="level mb-3">
             <div class="level-left" style="gap:.5rem;">
                 <button class="button is-link" type="button" on:click={openNew}>
-                    <span class="material-icons" aria-hidden="true">add_circle</span>&nbsp;새 규칙
+                    <span class="material-icons" aria-hidden="true">add_circle</span>&nbsp;새 매핑
                 </button>
-                <a class="button" href={`/channels/${channelId}/field-mappings`}>
-                    <span class="material-icons" aria-hidden="true">view_column</span>&nbsp;필드 매핑
+                <a class="button" href={`/channels/${channelId}/excel-validations`}>
+                    <span class="material-icons" aria-hidden="true">rule</span>&nbsp;검증 규칙
                 </a>
                 <a class="button" href={`/channels/${channelId}/excel-transform`}>
                     <span class="material-icons" aria-hidden="true">sync_alt</span>&nbsp;변환 프로필
@@ -222,7 +247,7 @@
             <div class="level-right" style="gap:.5rem; align-items:center;">
                 <SearchBar
                         bind:q
-                        placeholder="cell_ref 또는 expected_label 검색"
+                        placeholder="field_key 또는 selector_value 검색"
                         order="input-select"
                         on:search={doSearch}
                         on:reset={doReset}
@@ -236,30 +261,32 @@
         <!-- 목록 -->
         <div class="table-container">
             <table class="table is-fullwidth is-hoverable is-striped">
-                <caption class="is-sr-only">엑셀 검증 규칙 목록</caption>
+                <caption class="is-sr-only">필드 매핑 목록</caption>
                 <thead>
                 <tr>
                     <th scope="col">ID</th>
-                    <th scope="col">cell_ref</th>
-                    <th scope="col">expected_label</th>
-                    <th scope="col">is_required</th>
+                    <th scope="col">field_key</th>
+                    <th scope="col">selector_type</th>
+                    <th scope="col">selector_value</th>
+                    <th scope="col">options</th>
                     <th scope="col" class="has-text-right">작업</th>
                 </tr>
                 </thead>
                 <tbody>
                 {#if !loading && items.length === 0}
-                    <tr><td colspan="5" class="has-text-centered has-text-grey">데이터 없음</td></tr>
+                    <tr><td colspan="6" class="has-text-centered has-text-grey">데이터 없음</td></tr>
                 {:else}
                     {#each items as it}
                         <tr>
                             <th scope="row">{it.id}</th>
-                            <td><code class="mono">{it.cell_ref}</code></td>
-                            <td class="truncate"><span title={it.expected_label}>{it.expected_label}</span></td>
-                            <td>
-                                {#if it.is_required}
-                                    <span class="tag is-danger is-light">required</span>
+                            <td><code class="mono">{it.field_key}</code></td>
+                            <td><span class="tag is-light">{it.selector_type}</span></td>
+                            <td class="truncate"><span title={it.selector_value}>{it.selector_value}</span></td>
+                            <td class="truncate">
+                                {#if it.options}
+                                    <span class="tag is-info is-light" title={JSON.stringify(it.options)}>{Object.keys(it.options).join(', ') || 'options'}</span>
                                 {:else}
-                                    <span class="tag is-light">optional</span>
+                                    <span class="has-text-grey">—</span>
                                 {/if}
                             </td>
                             <td class="has-text-right actions">
@@ -290,46 +317,74 @@
 <!-- 등록/수정 모달 -->
 <Modal
         open={modalOpen}
-        title={editing ? '검증 규칙 수정' : '검증 규칙 등록'}
-        ariaDescription="엑셀 헤더 셀과 예상 라벨, 필수 여부를 설정합니다."
-        width={640}
-        maxHeight={640}
+        title={editing ? '필드 매핑 수정' : '필드 매핑 등록'}
+        ariaDescription="표준 필드와 엑셀 열/표현식을 매핑합니다."
+        width={720}
+        maxHeight={720}
         draggable={true}
         on:close={closeModal}
 >
     <svelte:fragment slot="body">
         <form on:submit|preventDefault={save} autocomplete="off">
             <div class="columns is-multiline">
-                <div class="column is-4">
+                <div class="column is-6">
                     <div class="field">
-                        <label class="label" for="vr-cell">cell_ref</label>
+                        <label class="label" for="fm-key">field_key</label>
                         <div class="control">
-                            <input id="vr-cell" class="input" type="text" bind:value={form.cell_ref}
-                                   placeholder="예: A1, B3, AA10"
-                                   required aria-required="true" bind:this={firstInput}
-                                   on:blur={() => form.cell_ref = normalizeCellRef(form.cell_ref)} />
+                            <input id="fm-key" class="input" type="text" bind:value={form.field_key}
+                                   placeholder="예: order_no, receiver_phone"
+                                   required aria-required="true" bind:this={firstInput} />
                         </div>
-                        <p class="help">형식: 대문자 열 + 1~5자리 행 (예: ABC99999)</p>
+                        <p class="help">소문자/언더스코어 권장. 저장 시 자동 소문자화됩니다.</p>
                     </div>
                 </div>
 
-                <div class="column is-8">
+                <div class="column is-6">
                     <div class="field">
-                        <label class="label" for="vr-label">expected_label</label>
+                        <label class="label" for="fm-type">selector_type</label>
                         <div class="control">
-                            <input id="vr-label" class="input" type="text" bind:value={form.expected_label}
-                                   placeholder="예: 상품주문번호 / 수취인연락처"
-                                   required aria-required="true" />
+                            <div class="select is-fullwidth">
+                                <select id="fm-type" bind:value={form.selector_type}>
+                                    <option value="col_ref">col_ref (예: A, AA)</option>
+                                    <option value="header_text">header_text (예: 상품주문번호)</option>
+                                    <option value="regex">regex (예: (?i)상품주문번호)</option>
+                                    <option value="expr">expr (표현식)</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="column is-12">
                     <div class="field">
-                        <label class="checkbox" for="vr-required">
-                            <input id="vr-required" type="checkbox" bind:checked={form.is_required} />
-                            <span class="ml-1">필수(required)</span>
-                        </label>
+                        <label class="label" for="fm-value">selector_value</label>
+                        <div class="control">
+                            <input id="fm-value" class="input" type="text" bind:value={form.selector_value}
+                                   placeholder={"예: A  |  상품주문번호  |  `` ${A}-${B} ``  |  SPLIT(${C}, \"-\", 1)"}
+                                   required aria-required="true" />
+                        </div>
+                        {#if form.selector_type === 'expr'}
+                            <div class="buttons are-small mt-2">
+                                {#each exprSnippets as s}
+                                    <button type="button" class="button is-light" on:click={() => useExprSnippet(s.value)}>{s.label}</button>
+                                {/each}
+                            </div>
+                            <p class="help">
+                                표현식 예: `` ${A}-${B} ``, <code>SPLIT(${C}, "-",
+                                0)</code>, <code>DIGITS(${X})</code>
+                            </p>
+                        {/if}
+                    </div>
+                </div>
+
+                <div class="column is-12">
+                    <div class="field">
+                        <label class="label" for="fm-options">options (JSON)</label>
+                        <div class="control">
+                            <textarea id="fm-options" class="textarea mono" rows="6" bind:value={optionsText}
+                                      placeholder={"예: { \"delimiter\": \"-\", \"trim\": true }"}></textarea>
+                        </div>
+                        <p class="help">비우면 저장 시 <em>null</em>로 처리됩니다.</p>
                     </div>
                 </div>
             </div>
@@ -353,8 +408,8 @@
 <!-- 삭제 확인 -->
 <ConfirmModal
         open={confirmOpen}
-        title="검증 규칙 삭제"
-        message={`이 규칙을 삭제하시겠습니까?<br><code>${confirmTarget?.cell_ref ?? ''}</code> → <strong>${confirmTarget?.expected_label ?? ''}</strong>`}
+        title="필드 매핑 삭제"
+        message={`이 매핑을 삭제하시겠습니까?<br><code>${confirmTarget?.field_key ?? ''}</code>`}
         confirmText="영구 삭제"
         cancelText="취소"
         confirmClass="is-danger"

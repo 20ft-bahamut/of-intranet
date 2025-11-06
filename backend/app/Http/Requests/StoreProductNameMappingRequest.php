@@ -21,7 +21,7 @@ class StoreProductNameMappingRequest extends FormRequest
         return [
             'channel_id'    => ['required','integer','exists:channels,id'],
             'listing_title' => ['required','string','max:255'],
-            'option_title'  => ['required','string','max:255'],
+            'option_title'  => ['nullable','string','max:255'],
             'description'   => ['nullable','string','max:255'],
 
             // (channel_id, product_id, listing_title, option_title) 유니크
@@ -42,7 +42,6 @@ class StoreProductNameMappingRequest extends FormRequest
             'channel_id.required'    => '채널을 선택하세요.',
             'channel_id.exists'      => '유효하지 않은 채널입니다.',
             'listing_title.required' => '채널 상품명을 입력하세요.',
-            'option_title.required'  => '채널 옵션명을 입력하세요.',
             'description.max'        => '설명은 255자 이하입니다.',
             'composite.unique'       => '동일한 채널/상품/상품명/옵션명이 이미 등록되어 있습니다.',
         ];

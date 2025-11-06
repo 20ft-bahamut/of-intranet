@@ -1,33 +1,50 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\V1\ChannelController;
-use App\Http\Controllers\Api\V1\ChannelExcelValidationRuleController;
-use App\Http\Controllers\Api\V1\ChannelExcelTransformProfileController;
-use App\Http\Controllers\Api\V1\ProductController;
-use App\Http\Controllers\Api\V1\ProductNameMappingController;
 
-Route::prefix('v1')->group(function () {
+use App\Http\Controllers\Api\V1\ChannelController;
+use App\Http\Controllers\Api\V1\ProductController;
+use App\Http\Controllers\Api\V1\ChannelExcelValidationRuleController as ExcelValidationCtrl;
+use App\Http\Controllers\Api\V1\ChannelExcelTransformProfileController as TransformCtrl;
+use App\Http\Controllers\Api\V1\ProductNameMappingController as ProductNameMappingCtrl;
+use App\Http\Controllers\Api\V1\ChannelExcelFieldMappingController as FieldMappingCtrl;
+use App\Http\Controllers\Api\V1\OrderUploadController;
+
+Route::prefix('v1')->scopeBindings()->group(function () {
+
+    // Top-level
     Route::apiResource('channels', ChannelController::class);
     Route::apiResource('products', ProductController::class);
 
-    // 채널별 엑셀 검증 규칙 (중첩 리소스)
-    Route::get   ('channels/{channel}/excel-validations',                [ChannelExcelValidationRuleController::class, 'index']);
-    Route::post  ('channels/{channel}/excel-validations',                [ChannelExcelValidationRuleController::class, 'store']);
-    Route::put   ('channels/{channel}/excel-validations/{rule}',         [ChannelExcelValidationRuleController::class, 'update']);
-    Route::patch ('channels/{channel}/excel-validations/{rule}',         [ChannelExcelValidationRuleController::class, 'update']);
-    Route::delete('channels/{channel}/excel-validations/{rule}',         [ChannelExcelValidationRuleController::class, 'destroy']);
+    // Channels.*
+    Route::prefix('channels/{channel}')->group(function () {
+        // excel-validations
+        Route::get   ('excel-validations',                 [ExcelValidationCtrl::class, 'index']);
+        Route::post  ('excel-validations',                 [ExcelValidationCtrl::class, 'store']);
+        Route::match (['put','patch'],'excel-validations/{rule}', [ExcelValidationCtrl::class, 'update']);
+        Route::delete('excel-validations/{rule}',          [ExcelValidationCtrl::class, 'destroy']);
 
-    // 단수 리소스: /channels/{channel}/excel-transform
-    Route::get   ('channels/{channel}/excel-transform',  [ChannelExcelTransformProfileController::class, 'show']);
-    Route::post  ('channels/{channel}/excel-transform',  [ChannelExcelTransformProfileController::class, 'store']);
-    Route::put   ('channels/{channel}/excel-transform',  [ChannelExcelTransformProfileController::class, 'update']);
-    Route::patch ('channels/{channel}/excel-transform',  [ChannelExcelTransformProfileController::class, 'update']);
-    Route::delete('channels/{channel}/excel-transform',  [ChannelExcelTransformProfileController::class, 'destroy']);
+        // excel-transform (singular)
+        Route::get   ('excel-transform',                   [TransformCtrl::class, 'show']);
+        Route::post  ('excel-transform',                   [TransformCtrl::class, 'store']);
+        Route::match (['put','patch'],'excel-transform',   [TransformCtrl::class, 'update']);
+        Route::delete('excel-transform',                   [TransformCtrl::class, 'destroy']);
 
-    Route::get   ('products/{product}/product-name-mappings',                 [ProductNameMappingController::class, 'index']);
-    Route::post  ('products/{product}/product-name-mappings',                 [ProductNameMappingController::class, 'store']);
-    Route::put   ('products/{product}/product-name-mappings/{mapping}',       [ProductNameMappingController::class, 'update']);
-    Route::patch ('products/{product}/product-name-mappings/{mapping}',       [ProductNameMappingController::class, 'update']);
-    Route::delete('products/{product}/product-name-mappings/{mapping}',       [ProductNameMappingController::class, 'destroy']);
+        // field-mappings
+        Route::get   ('field-mappings',                    [FieldMappingCtrl::class, 'index']);
+        Route::post  ('field-mappings',                    [FieldMappingCtrl::class, 'store']);
+        Route::get   ('field-mappings/{mapping}',          [FieldMappingCtrl::class, 'show']);
+        Route::match (['put','patch'],'field-mappings/{mapping}', [FieldMappingCtrl::class, 'update']);
+        Route::delete('field-mappings/{mapping}',          [FieldMappingCtrl::class, 'destroy']);
+    });
+
+    Route::post('channels/{channel}/orders/upload', [OrderUploadController::class, 'upload']);
+
+    // Products.*
+    Route::prefix('products/{product}')->group(function () {
+        Route::get   ('product-name-mappings',                    [ProductNameMappingCtrl::class, 'index']);
+        Route::post  ('product-name-mappings',                    [ProductNameMappingCtrl::class, 'store']);
+        Route::match (['put','patch'],'product-name-mappings/{mapping}', [ProductNameMappingCtrl::class, 'update']);
+        Route::delete('product-name-mappings/{mapping}',          [ProductNameMappingCtrl::class, 'destroy']);
+    });
 });

@@ -30,4 +30,8 @@ class Channel extends Model
         return $this->hasMany(\App\Models\ChannelExcelFieldMapping::class);
     }
 
+    public function mappings(): HasMany
+    {
+        return $this->excelFieldMappings();
+    }
 }

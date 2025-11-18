@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('product_name_mappings', function (Blueprint $table) {
             $table->bigIncrements('id');
-            $table->foreignId('channel_id')->constrained('channels')->cascadeOnDelete();
+            $table->foreignId('channel_id')->constrained('by-channel')->cascadeOnDelete();
             $table->foreignId('product_id')->constrained('products')->cascadeOnDelete();
             $table->string('listing_title', 255);
             $table->string('option_title', 255)->nullable();

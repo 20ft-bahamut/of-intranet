@@ -3,7 +3,7 @@ import { writable } from 'svelte/store';
 export const toasts = writable([]);
 // item: { id, type: 'success'|'danger'|'warning'|'info', text, ttl }
 
-export function addToast(type, text, ttl = 2500) {
+export function addToast(type, text, ttl = 3000) {
     const id = crypto.randomUUID?.() || String(Date.now() + Math.random());
     const item = { id, type, text, ttl };
     toasts.update((arr) => [...arr, item]);

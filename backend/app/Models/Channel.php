@@ -13,6 +13,11 @@ class Channel extends Model
         'default_excel_password',
     ];
 
+    public function rules()
+    {
+        return $this->hasMany(ChannelExcelValidationRule::class, 'channel_id');
+    }
+
     // 엑셀 변환 프로필 (채널당 1건)
     public function excelTransformProfile(): HasOne
     {

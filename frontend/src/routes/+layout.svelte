@@ -58,6 +58,10 @@
                         <a class={"navbar-item" + (isActive('/channels') ? ' is-active' : '')} role="menuitem" href="/channels">
                             <span class="material-icons" aria-hidden="true">share</span>&nbsp;채널관리
                         </a>
+                        <a class={"navbar-item" + (isActive('/product-name-mappings') ? ' is-active' : '')}
+                           role="menuitem" href="/product-name-mappings">
+                            <span class="material-icons" aria-hidden="true">link</span>&nbsp;상품명 맵핑
+                        </a>
                     </div>
                 </div>
 

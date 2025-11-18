@@ -21,7 +21,7 @@ class UpdateProductNameMappingRequest extends FormRequest
         $mappingId = is_object($mapping) ? $mapping->id : $mapping;
 
         return [
-            'channel_id'    => ['required','integer','exists:channels,id'],
+            'channel_id'    => ['required','integer','exists:by-channel,id'],
             'listing_title' => ['required','string','max:255'],
             'option_title'  => ['nullable','string','max:255'],
             'description'   => ['nullable','string','max:255'],

@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('channel_excel_settings', function (Blueprint $table) {
             $table->bigIncrements('id');
-            $table->foreignId('channel_id')->constrained('channels')->cascadeOnDelete();
+            $table->foreignId('channel_id')->constrained('by-channel')->cascadeOnDelete();
             $table->binary('excel_password_cipher')->nullable(); // 암호는 암호화 저장(옵션)
             $table->string('header_locator', 20)->nullable();    // fixed_row/auto 등
             $table->string('notes', 255)->nullable();

@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('channel_excel_transform_profiles', function (Blueprint $table) {
             $table->bigIncrements('id');
-            $table->foreignId('channel_id')->constrained('channels')->cascadeOnDelete();
+            $table->foreignId('channel_id')->constrained('by-channel')->cascadeOnDelete();
             $table->string('tracking_col_ref', 10);   // G 또는 G:G 형태
             $table->string('courier_name', 50);       // 우체국택배
             $table->string('courier_code', 20);       // 9002 등

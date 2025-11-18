@@ -19,7 +19,7 @@ class StoreProductNameMappingRequest extends FormRequest
         $productId = is_object($product) ? $product->id : $product;
 
         return [
-            'channel_id'    => ['required','integer','exists:channels,id'],
+            'channel_id'    => ['required','integer','exists:by-channel,id'],
             'listing_title' => ['required','string','max:255'],
             'option_title'  => ['nullable','string','max:255'],
             'description'   => ['nullable','string','max:255'],

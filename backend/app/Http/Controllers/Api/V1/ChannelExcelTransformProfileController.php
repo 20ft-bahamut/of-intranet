@@ -13,7 +13,7 @@ use App\Support\ApiResponse;
 class ChannelExcelTransformProfileController extends Controller
 {
     /**
-     * GET /api/v1/channels/{channel}/excel-transform
+     * GET /api/v1/by-channel/{channel}/excel-transform
      * - 존재하면 프로필 반환
      * - 없으면 data:null 반환(프론트에서 생성 UI 표시)
      */
@@ -27,7 +27,7 @@ class ChannelExcelTransformProfileController extends Controller
     }
 
     /**
-     * POST /api/v1/channels/{channel}/excel-transform
+     * POST /api/v1/by-channel/{channel}/excel-transform
      * - 채널당 1건만 허용(중복 생성 시 409)
      */
     public function store(Channel $channel, StoreChannelExcelTransformProfileRequest $request)
@@ -48,7 +48,7 @@ class ChannelExcelTransformProfileController extends Controller
     }
 
     /**
-     * PUT /api/v1/channels/{channel}/excel-transform
+     * PUT /api/v1/by-channel/{channel}/excel-transform
      * - 없으면 404
      */
     public function update(Channel $channel, UpdateChannelExcelTransformProfileRequest $request)
@@ -67,7 +67,7 @@ class ChannelExcelTransformProfileController extends Controller
     }
 
     /**
-     * DELETE /api/v1/channels/{channel}/excel-transform
+     * DELETE /api/v1/by-channel/{channel}/excel-transform
      * - 존재하면 삭제, 없어도 200 OK
      */
     public function destroy(Channel $channel)

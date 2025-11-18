@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('orders', function (Blueprint $table) {
             $table->bigIncrements('id');
-            $table->foreignId('channel_id')->constrained('channels')->cascadeOnDelete();
+            $table->foreignId('channel_id')->constrained('by-channel')->cascadeOnDelete();
             $table->string('channel_order_no', 100);
 
             $table->string('buyer_phone', 50)->nullable();

@@ -19,7 +19,10 @@
     let password = '';
 
     let uploading = false;
-    let result = null;   // { preview, count, stored }
+    let committing = false;
+
+    // 업로드 응답 형식: { preview, count, stored, stats?, meta? }
+    let result = null;
     let error = null;
 
     // ===== 채널 로딩 =====
@@ -51,18 +54,23 @@
         result = null;
     }
 
-    // ===== 업로드 =====
+    // ===== 공통 =====
     function apiBase() {
         return (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
     }
-
-    async function upload() {
-        if (!selected) { toast.danger('채널을 선택하세요.'); return; }
-        if (!file) { toast.danger('엑셀 파일을 선택하세요.'); return; }
+    function requireSelectedAndFile() {
+        if (!selected) { toast.danger('채널을 선택하세요.'); return false; }
+        if (!file) { toast.danger('엑셀 파일을 선택하세요.'); return false; }
         if (selected.is_excel_encrypted && !password) {
             toast.danger('이 채널은 암호화 엑셀입니다. 비밀번호를 입력하세요.');
-            return;
+            return false;
         }
+        return true;
+    }
+
+    // ===== 업로드 (미리보기) =====
+    async function upload() {
+        if (!requireSelectedAndFile()) return;
 
         uploading = true; error = null; result = null;
         try {
@@ -79,7 +87,7 @@
                 throw new Error(msg);
             }
             result = data.data;
-            toast.success(`업로드 처리 완료 (행 ${result.count}건)`);
+            toast.success(`미리보기 생성 완료 (행 ${result.count ?? result?.preview?.length ?? 0}건)`);
         } catch (e) {
             error = e.message || String(e);
             toast.danger(error);
@@ -88,13 +96,70 @@
         }
     }
 
+    // ===== 커밋 (DB 반영) =====
+    $: canCommit = !!result?.stored && !!selected && !committing;
+
+    async function commit() {
+        if (!selected) { toast.danger('채널을 선택하세요.'); return; }
+        if (!result?.stored) { toast.danger('업로드 경로가 없습니다. 먼저 미리보기를 생성하세요.'); return; }
+
+        committing = true; error = null;
+        try {
+            const payload = {
+                upload_path: result.stored, // 백엔드 upload()에서 내려준 실제 저장 경로
+                // 암호화 채널인 경우에만 전달
+                password: selected.is_excel_encrypted ? (password || undefined) : undefined,
+            };
+
+            const res = await fetchJson(`/channels/${selected.id}/orders/commit`, {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+                const msg = res?.message || res?.error || 'DB 반영 실패';
+                throw new Error(msg);
+            }
+
+            const stats = res?.data?.stats;
+            const affected = stats?.affected ?? stats?.received ?? undefined;
+            toast.success(`DB 반영 완료${affected != null ? ` (처리: ${affected}건)` : ''}`);
+
+            // 원하면 주문 목록으로 이동:
+            // goto('/orders');
+        } catch (e) {
+            error = e.message || String(e);
+            toast.danger(error);
+        } finally {
+            committing = false;
+        }
+    }
+
     // ===== 테이블 헤더 키 =====
     function previewKeys() {
         if (!result?.preview?.length) return [];
         const keys = Object.keys(result.preview[0]);
-        const first = ['channel_code'];
-        const rest = keys.filter(k => !first.includes(k));
-        return [...first, ...rest];
+
+        // 자주 보는 필드 우선 정렬 + 나머지 뒤에
+        const priority = [
+            'ordered_at',
+            'channel_order_no',
+            'product_title',
+            'option_title',
+            'quantity',
+            'receiver_name',
+            'receiver_phone',
+            'receiver_postcode',
+            'receiver_addr_full',
+            'tracking_no',
+            'status_std',
+            'status_src',
+            'channel_code',
+        ];
+
+        const set = new Set(priority.filter(k => keys.includes(k)));
+        keys.forEach(k => set.add(k));
+        return Array.from(set);
     }
 </script>
 
@@ -162,9 +227,9 @@
                                     <label class="file-label">
                                         <input id="file" class="file-input" type="file" accept=".xlsx,.xlsm" bind:this={fileInput} on:change={onFileChange} />
                                         <span class="file-cta">
-                      <span class="file-icon"><span class="material-icons">attach_file</span></span>
-                      <span class="file-label">파일 선택</span>
-                    </span>
+                                            <span class="file-icon"><span class="material-icons">attach_file</span></span>
+                                            <span class="file-label">파일 선택</span>
+                                        </span>
                                         <span class="file-name">{file ? file.name : '선택된 파일 없음'}</span>
                                     </label>
                                 </div>
@@ -194,7 +259,7 @@
                     <div class="column is-12">
                         <div class="buttons">
                             <button class="button is-link" type="submit" disabled={!selected || !file || uploading}>
-                                <span class="material-icons" aria-hidden="true">cloud_upload</span>&nbsp;업로드
+                                <span class="material-icons" aria-hidden="true">cloud_upload</span>&nbsp;미리보기 생성
                             </button>
                             <button class="button is-light" type="button" on:click={resetForm}>
                                 초기화
@@ -211,7 +276,20 @@
 
         <!-- 결과 미리보기 -->
         {#if result}
-            <h2 class="title is-6">미리보기 <span class="tag is-light">총 {result.count}건</span></h2>
+            <h2 class="title is-6">
+                미리보기
+                <span class="tag is-light">총 {result.count ?? result?.preview?.length ?? 0}건</span>
+                {#if result?.stats?.valid != null}
+                    <span class="tag is-success is-light">유효 {result.stats.valid}</span>
+                {/if}
+                {#if result?.stats?.invalid != null}
+                    <span class="tag is-danger is-light">무효 {result.stats.invalid}</span>
+                {/if}
+                {#if result?.meta?.sheet}
+                    <span class="tag is-info is-light">시트 {result.meta.sheet}</span>
+                {/if}
+            </h2>
+
             {#if result.preview?.length}
                 <div class="table-container">
                     <table class="table is-fullwidth is-striped is-hoverable">
@@ -240,6 +318,16 @@
             <div class="mt-3">
                 <span class="tag is-light">저장 위치</span>
                 <code class="mono">{result.stored}</code>
+            </div>
+
+            <div class="mt-4">
+                <button class="button is-success" type="button" on:click={commit} disabled={!canCommit}>
+                    <span class="material-icons" aria-hidden="true">save</span>&nbsp;
+                    {committing ? 'DB 반영 중…' : 'DB 반영(커밋)'}
+                </button>
+                <button class="button" type="button" on:click={() => goto('/orders')}>
+                    <span class="material-icons">list</span>&nbsp;주문 보기
+                </button>
             </div>
         {/if}
 

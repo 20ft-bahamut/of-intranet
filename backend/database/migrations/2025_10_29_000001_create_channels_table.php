@@ -8,7 +8,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('channels', function (Blueprint $table) {
+        Schema::create('by-channel', function (Blueprint $table) {
             $table->bigIncrements('id');
             $table->string('code', 50)->unique();   // smartstore, coupang ...
             $table->string('name', 100);
@@ -21,7 +21,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('channels');
+        Schema::dropIfExists('by-channel');
     }
 
 };

@@ -31,7 +31,7 @@ class ProductController extends Controller
         if ($isActive === '1') $qb->where('is_active', true);
         if ($isActive === '0') $qb->where('is_active', false);
 
-        $qb->orderByDesc('id');
+        $qb->orderByDesc('code');
 
         $p = $qb->paginate($perPage, ['*'], 'page', $page);
 

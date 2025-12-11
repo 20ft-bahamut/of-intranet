@@ -1,0 +1,5 @@
+msoffcrypto-tool
+pandas
+xlrd
+xlsxwriter
+openpyxl

@@ -13,7 +13,7 @@ return new class extends Migration
             // 보통은 `orders_channel_id_foreign`
             $table->dropForeign(['channel_id']);
             $table->foreign('channel_id')
-                ->references('id')->on('by-channel')
+                ->references('id')->on('channels')
                 ->onDelete('restrict'); // 또는 ->restrictOnDelete();
         });
     }
@@ -23,7 +23,7 @@ return new class extends Migration
         Schema::table('orders', function (Blueprint $table) {
             $table->dropForeign(['channel_id']);
             $table->foreign('channel_id')
-                ->references('id')->on('by-channel')
+                ->references('id')->on('channels')
                 ->onDelete('cascade'); // 이전 상태가 cascade였다면 복구
         });
     }

@@ -31,7 +31,7 @@ return new class extends Migration {
 
             // FK & 인덱스
             $table->foreign('channel_id')
-                ->references('id')->on('by-channel')
+                ->references('id')->on('channels')
                 ->onDelete('cascade');
 
             // 채널별 한 필드당 1개 매핑 고정

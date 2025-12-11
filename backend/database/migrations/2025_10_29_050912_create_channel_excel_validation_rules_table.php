@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('channel_excel_validation_rules', function (Blueprint $table) {
             $table->bigIncrements('id');
-            $table->foreignId('channel_id')->constrained('by-channel')->cascadeOnDelete();
+            $table->foreignId('channel_id')->constrained('channels')->cascadeOnDelete();
             $table->string('cell_ref', 10);               // A1, B2...
             $table->string('expected_label', 100);        // 주문번호, 수취인이름...
             $table->boolean('is_required')->default(true);

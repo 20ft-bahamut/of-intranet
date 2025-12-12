@@ -19,40 +19,57 @@ class OrderController extends Controller
         if ($perPage <= 0 || $perPage > 200) $perPage = 50;
 
         $filters = [
-            'q' => $req->query('q', ''),
-            'channel_id' => $req->query('channel_id', ''),
+            'q'            => $req->query('q', ''),
+            'channel_id'   => $req->query('channel_id', ''),
             'has_tracking' => $req->query('has_tracking', null),
-            'date_from' => $req->query('date_from', null),
-            'date_to' => $req->query('date_to', null),
+            'date_from'    => $req->query('date_from', null),
+            'date_to'      => $req->query('date_to', null),
         ];
 
-        // Eloquent + 관계 로딩 (N+1 방지)
+        // ✅ 정렬 파라미터
+        $sort = (string) $req->query('sort', 'ordered_at');
+        $dir  = strtolower((string) $req->query('dir', 'desc'));
+        $dir  = in_array($dir, ['asc','desc'], true) ? $dir : 'desc';
+
+        // ✅ 허용 정렬 필드 매핑(화이트리스트)
+        // - 프론트에서 보내는 값 → 실제 DB 컬럼(or join 컬럼)로 매핑
+        $sortMap = [
+            'ordered_at' => 'orders.ordered_at',
+            'id'         => 'orders.id',
+            'tracking'   => 'orders.tracking_no',
+            'product'    => 'orders.product_title', // (정규화명으로 하고 싶으면 join+products.name 사용)
+            'channel'    => 'orders.channel_id',    // (채널명 정렬은 join+channels.name 필요)
+        ];
+        $sortCol = $sortMap[$sort] ?? 'orders.ordered_at';
+
         $query = Order::with(['channel:id,name,code', 'product:id,code'])
-            ->select('orders.*') // 명시적으로 orders 테이블 컬럼 사용
+            ->select('orders.*')
             ->applyFilters($filters)
-            ->orderByDesc('id');
+            ->orderBy($sortCol, $dir);
+
+        // ✅ 동일값일 때 흔들림 방지(2차 정렬)
+        if ($sortCol !== 'orders.id') {
+            $query->orderBy('orders.id', 'desc');
+        }
 
         $paginator = $query->paginate($perPage)->appends($req->query());
 
-        // items에 channel_name, channel_code, product_code를 섞어 전달 (프론트 편의)
         $items = collect($paginator->items())->map(function($row) {
-            // $row은 모델 인스턴스일 수 있으니 배열화
             $r = is_array($row) ? $row : $row->toArray();
-
             $r['channel_name'] = $r['channel']['name'] ?? null;
             $r['channel_code'] = $r['channel']['code'] ?? null;
             $r['product_code'] = $r['product']['code'] ?? null;
-            unset($r['channel'], $r['product']); // 중복 제거(선택)
+            unset($r['channel'], $r['product']);
             return $r;
         })->all();
 
         return ApiResponse::success([
             'data' => $items,
             'pagination' => [
-                'total' => $paginator->total(),
-                'per_page' => $paginator->perPage(),
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
                 'current_page' => $paginator->currentPage(),
-                'last_page' => $paginator->lastPage(),
+                'last_page'    => $paginator->lastPage(),
             ],
         ]);
     }

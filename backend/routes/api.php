@@ -67,6 +67,7 @@ Route::prefix('v1')->scopeBindings()->group(function () {
     });
 
     // ✅ Orders (전체 목록 / 단건 / 일부 수정)
+    Route::get('/orders/export', [OrderController::class, 'export']);
     Route::get('orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('orders/{order}', [OrderController::class, 'show'])->name('orders.show');
     Route::match($PUT_PATCH, 'orders/{order}', [OrderController::class, 'update'])->name('orders.update');

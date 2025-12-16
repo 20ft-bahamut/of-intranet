@@ -32,22 +32,27 @@ class OrderController extends Controller
         $dir  = in_array($dir, ['asc','desc'], true) ? $dir : 'desc';
 
         // ✅ 허용 정렬 필드 매핑(화이트리스트)
-        // - 프론트에서 보내는 값 → 실제 DB 컬럼(or join 컬럼)로 매핑
         $sortMap = [
             'ordered_at' => 'orders.ordered_at',
             'id'         => 'orders.id',
             'tracking'   => 'orders.tracking_no',
-            'product'    => 'orders.product_title', // (정규화명으로 하고 싶으면 join+products.name 사용)
-            'channel'    => 'orders.channel_id',    // (채널명 정렬은 join+channels.name 필요)
+            'product'    => 'orders.product_title',
+            'channel'    => 'orders.channel_id',
         ];
         $sortCol = $sortMap[$sort] ?? 'orders.ordered_at';
 
         $query = Order::with(['channel:id,name,code', 'product:id,code'])
             ->select('orders.*')
+            // ✅ 변경로그 존재 여부(BOOL) 추가
+            ->addSelect([
+                'has_change_logs' => DB::table('order_change_logs as ocl')
+                    ->selectRaw('1')
+                    ->whereColumn('ocl.order_id', 'orders.id')
+                    ->limit(1)
+            ])
             ->applyFilters($filters)
             ->orderBy($sortCol, $dir);
 
-        // ✅ 동일값일 때 흔들림 방지(2차 정렬)
         if ($sortCol !== 'orders.id') {
             $query->orderBy('orders.id', 'desc');
         }
@@ -56,9 +61,14 @@ class OrderController extends Controller
 
         $items = collect($paginator->items())->map(function($row) {
             $r = is_array($row) ? $row : $row->toArray();
+
             $r['channel_name'] = $r['channel']['name'] ?? null;
             $r['channel_code'] = $r['channel']['code'] ?? null;
             $r['product_code'] = $r['product']['code'] ?? null;
+
+            // ✅ exists 서브쿼리 결과: null/1 형태로 올 수 있어서 boolean으로 정규화
+            $r['has_change_logs'] = !empty($r['has_change_logs']);
+
             unset($r['channel'], $r['product']);
             return $r;
         })->all();
@@ -74,26 +84,15 @@ class OrderController extends Controller
         ]);
     }
 
-
-    /**
-     * GET /api/v1/orders/{order}
-     */
     public function show(Order $order)
     {
         return ApiResponse::success(new OrderResource($order));
     }
 
-    /**
-     * PATCH /api/v1/orders/{order}
-     * 허용: admin_memo, tracking_no, status_std
-     * - tracking_no는 빈 값이면 기존값 보존(덮어쓰지 않음)
-     */
     public function update(UpdateOrderRequest $request, Order $order)
     {
-        // 유효성 통과한 값만 받기
         $data = $request->validated();
 
-        // 전달된 키만 업데이트 (null 들어오면 null로 세팅)
         $dirty = false;
         foreach (['admin_memo','tracking_no','status_std'] as $k) {
             if (array_key_exists($k, $data)) {
@@ -110,7 +109,6 @@ class OrderController extends Controller
 
         $order->save();
 
-        // 응답 편의: 채널/상품 코드 포함
         $order->load(['channel:id,name,code', 'product:id,code']);
         $resp = $order->toArray();
         $resp['channel_name'] = $order->channel->name ?? null;
@@ -121,11 +119,6 @@ class OrderController extends Controller
         return ApiResponse::success($resp, '주문이 갱신되었습니다.');
     }
 
-    /**
-     * (선택) POST /api/v1/orders/bulk/tracking
-     * body: { items: [ {id, tracking_no} ... ] }
-     * 빈 tracking_no는 무시(보존). 존재하는 것만 업서트/업데이트.
-     */
     public function bulkUpdateTracking(Request $req)
     {
         $items = $req->input('items', []);
@@ -153,16 +146,17 @@ class OrderController extends Controller
 
         $affected = 0;
         DB::transaction(function () use (&$affected, $payload) {
-            // id 기준 부분 업데이트
             foreach (array_chunk($payload, 500) as $chunk) {
                 $ids = array_column($chunk, 'id');
-                // id in (...) 에 대해 tracking_no만 업데이트
                 DB::table('orders')
                     ->whereIn('id', $ids)
-                    ->update(['tracking_no' => DB::raw("CASE id " . implode(' ', array_map(
-                            function ($row) { return "WHEN {$row['id']} THEN '" . addslashes($row['tracking_no']) . "'"; },
-                            $chunk
-                        )) . " END"), 'updated_at' => now()]);
+                    ->update([
+                        'tracking_no' => DB::raw("CASE id " . implode(' ', array_map(
+                                function ($row) { return "WHEN {$row['id']} THEN '" . addslashes($row['tracking_no']) . "'"; },
+                                $chunk
+                            )) . " END"),
+                        'updated_at' => now()
+                    ]);
                 $affected += count($chunk);
             }
         });
@@ -170,22 +164,18 @@ class OrderController extends Controller
         return ApiResponse::success(['affected' => (int) $affected], 'bulk updated');
     }
 
-
-    // ① 현재 필터(페이지 무시) 기반 전체/부분 내보내기
     public function export(Request $req): StreamedResponse
     {
-        // ── 1) 파라미터 받기: 선택/전체/송장없음만 + 공통 필터 + 시간대
         $ids       = array_filter(array_map('intval', (array) ($req->input('ids', []))));
-        $only      = (string) $req->query('only', ''); // 'no-tracking' | ''
+        $only      = (string) $req->query('only', '');
         $q         = (string) $req->query('q', '');
         $channelId = (string) $req->query('channel_id', '');
-        $hasTrack  = $req->query('has_tracking', null); // '1' | '0' | null
+        $hasTrack  = $req->query('has_tracking', null);
         $dateFrom  = $req->query('date_from', null);
         $dateTo    = $req->query('date_to', null);
-        $hourFrom  = $req->query('hour_from', null); // 0~23
-        $hourTo    = $req->query('hour_to', null);   // 0~23
+        $hourFrom  = $req->query('hour_from', null);
+        $hourTo    = $req->query('hour_to', null);
 
-        // 프론트에서 only=no-tracking 오면 최우선으로 반영
         if ($only === 'no-tracking') {
             $hasTrack = '0';
         }
@@ -203,14 +193,12 @@ class OrderController extends Controller
             ->applyFilters($filters)
             ->orderByDesc('ordered_at');
 
-        // 시간(시) 범위 필터 (DB 시간이 UTC라면 HOUR(ordered_at) 기준의 단순 필터임)
         if ($hourFrom !== null || $hourTo !== null) {
             $hf = is_numeric($hourFrom) ? max(0, min(23, (int)$hourFrom)) : 0;
             $ht = is_numeric($hourTo)   ? max(0, min(23, (int)$hourTo))   : 23;
             $query->whereBetween(DB::raw('HOUR(ordered_at)'), [$hf, $ht]);
         }
 
-        // 선택 다운로드
         if (!empty($ids)) {
             $query->whereIn('id', $ids);
         }
@@ -223,27 +211,21 @@ class OrderController extends Controller
             'Content-Disposition'           => "attachment; filename=\"$filename\"",
             'Pragma'                        => 'public',
             'Cache-Control'                 => 'no-store, no-cache, must-revalidate',
-            // ★ fetch에서 파일명을 읽게 하려면 필요
             'Access-Control-Expose-Headers' => 'Content-Disposition',
         ];
 
         return response()->stream(function () use ($query) {
-            // 출력 스트림
             $out = fopen('php://output', 'w');
-            // UTF-8 BOM
             fwrite($out, "\xEF\xBB\xBF");
 
-            // 헤더 라인
             fputcsv($out, [
                 '채널명','채널주문번호','상품명(정규화)','구매자명','구매자휴대폰',
                 '수량','수취인명','수취인우편번호','수취인주소','수취인휴대번호',
                 '배송요구사항','주문일시(KST)'
             ]);
 
-            // 대량 안전: lazy로 당겨오고 주기적으로 flush
             $i = 0;
             foreach ($query->lazy(1000) as $r) {
-                /** @var \App\Models\Order $r */
                 $chName  = $r->channel->name ?? '';
                 $pName   = $r->product->name ?? $r->product_title ?? '';
                 $orderAt = $r->ordered_at ? $r->ordered_at->timezone('Asia/Seoul')->format('Y-m-d H:i:s') : '';
@@ -263,14 +245,10 @@ class OrderController extends Controller
                     $orderAt,
                 ]);
 
-                if ((++$i % 500) === 0) {
-                    fflush($out);
-                }
+                if ((++$i % 500) === 0) fflush($out);
             }
 
             fclose($out);
         }, 200, $headers);
     }
-
-
 }

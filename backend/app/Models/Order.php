@@ -69,4 +69,9 @@ class Order extends Model
 
         return $qb;
     }
+
+    public function changeLogs()
+    {
+        return $this->hasMany(\App\Models\OrderChangeLog::class, 'order_id');
+    }
 }

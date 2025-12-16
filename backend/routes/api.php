@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\V1\ChannelExcelFieldMappingController as FieldMappi
 use App\Http\Controllers\Api\V1\OrderUploadController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\StatsController;
+use App\Http\Controllers\Api\V1\OrderChangeLogController;
 
 // ✅ 새로 추가
 use App\Http\Controllers\Api\V1\ProductNameMappingAdminController as ProductNameMappingAdminController;
@@ -71,6 +72,7 @@ Route::prefix('v1')->scopeBindings()->group(function () {
     Route::get('orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('orders/{order}', [OrderController::class, 'show'])->name('orders.show');
     Route::match($PUT_PATCH, 'orders/{order}', [OrderController::class, 'update'])->name('orders.update');
+    Route::get('/orders/{order}/change-logs', [OrderChangeLogController::class, 'index']);
 
     // Dashboard Stats
     Route::prefix('stats')->group(function () {

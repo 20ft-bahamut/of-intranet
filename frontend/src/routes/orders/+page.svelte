@@ -12,7 +12,7 @@
         {
             q:'', channel_id:'', has_tracking:'',
             date_from:'', date_to:'',
-            hour_from:'', hour_to:'',        // 👈 추가
+            hour_from:'', hour_to:'',
             sort:'ordered_at', dir:'desc',
             page:1, per_page:50
         },
@@ -22,7 +22,7 @@
     // 폼 상태
     let q=''; let channelId=''; let hasTracking='';
     let dateFrom=''; let dateTo='';
-    let hourFrom=''; let hourTo='';       // 👈 추가 ('' | 0..23)
+    let hourFrom=''; let hourTo='';
     let sortField='ordered_at'; let sortDir='desc';
     let currentPage=1; let perPage=50;
     let loading=false;
@@ -56,6 +56,54 @@
         }catch(e){ toast.danger(e.message||String(e)); }
     }
 
+    // ===== 변경이력 모달/표시 =====
+    let changeOpen = false;
+    let changeOrder = null;
+    let changeLogs = [];
+    let changeLoading = false;
+
+    // ✅ 백엔드 컬럼명 고정: has_change_logs
+    // (혹시 count 내려주면 같이 표시하려고만 열어둠)
+    const hasChanges = (r) => !!(r?.has_change_logs);
+    const changeCount = (r) => (r?.change_logs_count ?? r?.change_count ?? r?.changes_count ?? null);
+
+    const FIELD_LABEL = {
+        tracking_no: '송장번호',
+        receiver_name: '수취인명',
+        receiver_phone: '수취인 전화',
+        receiver_addr_full: '수취인 주소',
+        buyer_name: '구매자명',
+        buyer_phone: '구매자 전화',
+        product_title: '상품명',
+        option_title: '옵션명',
+        quantity: '수량',
+        status_std: '상태',
+    };
+    const prettyField = (f) => FIELD_LABEL[f] || f;
+
+    const fmtChangedAt = (s) => (s ? String(s).replace('T',' ').slice(0,19) : '');
+
+    async function openChanges(row){
+        changeOpen = true;
+        changeOrder = row;
+        changeLogs = [];
+        changeLoading = true;
+
+        try{
+            // ✅ 네 백엔드 엔드포인트에 맞춰라
+            // 예: GET /api/v1/orders/{id}/change-logs
+            const res = await fetchJson(`/orders/${row.id}/change-logs`);
+            if(!res.ok) throw new Error(res.message || '변경 이력 조회 실패');
+            changeLogs = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
+        }catch(e){
+            toast.danger(e.message || String(e));
+            changeOpen = false;
+            changeOrder = null;
+        }finally{
+            changeLoading = false;
+        }
+    }
+
     // 시간 옵션 00~23
     const HOURS=[...Array(24).keys()]; // [0..23]
 
@@ -73,7 +121,7 @@
         qsCtl.set({
             q, channel_id:channelId, has_tracking:hasTracking,
             date_from:dateFrom, date_to:dateTo,
-            hour_from:hourFrom, hour_to:hourTo,  // 👈 포함
+            hour_from:hourFrom, hour_to:hourTo,
             sort:sortField, dir:sortDir,
             page:currentPage, per_page:perPage,
             ...patch
@@ -90,6 +138,7 @@
             channelMap=new Map(channels.map(c=>[String(c.id),c]));
         }catch(e){ toast.danger(e.message||String(e)); }
     }
+
     function params(){
         const p={ page:currentPage, per_page:perPage, sort:sortField, dir:sortDir };
         if(q.trim()) p.q=q.trim();
@@ -97,19 +146,27 @@
         if(hasTracking!=='') p.has_tracking=hasTracking;
         if(dateFrom) p.date_from=dateFrom;
         if(dateTo) p.date_to=dateTo;
-        if(hourFrom !== '' && hourFrom != null) p.hour_from=hourFrom;   // 👈 추가
-        if(hourTo   !== '' && hourTo   != null) p.hour_to  =hourTo;     // 👈 추가
+        if(hourFrom !== '' && hourFrom != null) p.hour_from=hourFrom;
+        if(hourTo   !== '' && hourTo   != null) p.hour_to  =hourTo;
         return p;
     }
+
     async function loadOrders(){
         loading=true;
         try{
             const r=await fetchJson('/orders'+qs(params()));
             if(!r.ok) throw new Error(r.message||'주문 목록 실패');
             rows=r.data?.items||r.data?.data||r.data||[];
+
             const pg=r.data?.pagination||r.pagination||r.meta;
-            if(pg){ total=pg.total??0; perPage=pg.per_page??perPage; currentPage=pg.current_page??1; lastPage=pg.last_page??1; }
-            else { total=rows.length; currentPage=1; lastPage=1; }
+            if(pg){
+                total=pg.total??0;
+                perPage=pg.per_page??perPage;
+                currentPage=pg.current_page??1;
+                lastPage=pg.last_page??1;
+            } else {
+                total=rows.length; currentPage=1; lastPage=1;
+            }
         }catch(e){ toast.danger(e.message||String(e)); }
         finally{ loading=false; }
     }
@@ -131,7 +188,7 @@
 
     onMount(async()=>{ syncFromQS(); await loadChannels(); await loadOrders(); });
 
-    // ── CSV (기존과 동일, 시간필터는 params()에 자동 포함)
+    // ── CSV
     function exportQuery(extra={}){
         const p=params(); delete p.page; delete p.per_page;
         return new URLSearchParams({ ...p, ...extra }).toString();
@@ -168,7 +225,6 @@
 
         <!-- ─────────────────────  PRETTY TOOLBAR  ───────────────────── -->
         <div class="pretty-toolbar card">
-            <!-- Row 1: Title + Actions -->
             <div class="pt-row">
                 <div class="pt-title">
                     <span class="material-icons">tune</span>
@@ -201,13 +257,10 @@
                         </button>
                     </div>
 
-                    <span class="tag is-light total-chip">
-        총 {total}건
-      </span>
+                    <span class="tag is-light total-chip">총 {total}건</span>
                 </div>
             </div>
 
-            <!-- Row 2: Search -->
             <div class="pt-row">
                 <label class="pt-field span-3">
                     <span class="pt-label">검색어</span>
@@ -216,7 +269,6 @@
                 </label>
             </div>
 
-            <!-- Row 3: Filter Grid -->
             <div class="pt-grid">
                 <label class="pt-field">
                     <span class="pt-label">채널</span>
@@ -243,7 +295,7 @@
                     <div class="select is-fullwidth">
                         <select bind:value={hourFrom}>
                             <option value="">00시</option>
-                            {#each [...Array(24).keys()] as h}<option value={h}>{String(h).padStart(2,'0')}시</option>{/each}
+                            {#each HOURS as h}<option value={h}>{String(h).padStart(2,'0')}시</option>{/each}
                         </select>
                     </div>
                 </label>
@@ -253,7 +305,7 @@
                     <div class="select is-fullwidth">
                         <select bind:value={hourTo}>
                             <option value="">23시</option>
-                            {#each [...Array(24).keys()] as h}<option value={h}>{String(h).padStart(2,'0')}시</option>{/each}
+                            {#each HOURS as h}<option value={h}>{String(h).padStart(2,'0')}시</option>{/each}
                         </select>
                     </div>
                 </label>
@@ -293,9 +345,7 @@
                 </label>
             </div>
         </div>
-        <!-- ─────────────────────────────────────────────────────────── -->
 
-        <!-- 페이지 조작 -->
         <div class="is-flex is-justify-content-space-between is-align-items-center mb-3 wrap-gap">
             <div class="buttons">
                 <button class="button is-light" on:click={selectAllVisible}>이 페이지 전체선택</button>
@@ -311,7 +361,6 @@
             </nav>
         </div>
 
-        <!-- 카드 리스트 -->
         {#if rows.length === 0}
             <div class="notification is-light">데이터가 없습니다.</div>
         {:else}
@@ -321,12 +370,23 @@
                         <div class="of-card__head">
                             <div class="head-left">
                                 <label class="selectbox"><input type="checkbox" checked={isSelected(r.id)} on:change={() => toggleSelect(r.id)} /></label>
+
                                 <div class="chips">
                                     <span class="chip"><span class="chip__icon material-icons">tag</span>ID {r.id}</span>
                                     <span class="chip"><span class="chip__icon material-icons">storefront</span>{channelLabel(r)}</span>
                                     {#if r.status_std}<span class="chip chip--info">{r.status_std}</span>{/if}
+
+                                    <!-- ✅ 변경이력 표시: has_change_logs 기준 -->
+                                    {#if hasChanges(r)}
+                                        <button type="button" class="chip chip--warn chip--btn" title="변경 이력 보기" on:click={() => openChanges(r)}>
+                                            <span class="chip__icon material-icons">history</span>
+                                            변경이력
+                                            {#if changeCount(r) != null}<span class="chip__count">({changeCount(r)})</span>{/if}
+                                        </button>
+                                    {/if}
                                 </div>
                             </div>
+
                             <div class="chip chip--ghost" title="주문일(결제일)">
                                 <span class="chip__icon material-icons">event</span>
                                 <span class="is-size-7">주문일</span>&nbsp;<span class="mono">{orderDate(r) || '-'}</span>
@@ -389,7 +449,6 @@
             </div>
         {/if}
 
-        <!-- 하단 페이지네이션 -->
         <div class="is-flex is-justify-content-space-between is-align-items-center mt-4 wrap-gap">
             <span class="tag is-light">총 {total}건</span>
             <nav class="pagination is-small">
@@ -420,6 +479,61 @@
                 </div>
             </svelte:fragment>
         </Modal>
+
+        <!-- ✅ 변경이력 모달 -->
+        <Modal
+                bind:open={changeOpen}
+                on:close={() => { changeOpen=false; changeOrder=null; changeLogs=[]; }}
+                title="변경 이력"
+                ariaDescription="주문 변경 이력 diff"
+                width="900px"
+        >
+            <svelte:fragment slot="body">
+                <div class="mb-3">
+                    <div class="is-size-7 text-dim">주문번호</div>
+                    <div class="mono has-text-weight-semibold">{changeOrder?.channel_order_no}</div>
+                </div>
+
+                {#if changeLoading}
+                    <div class="notification is-light">불러오는 중…</div>
+                {:else if changeLogs.length === 0}
+                    <div class="notification is-light">변경 이력이 없습니다.</div>
+                {:else}
+                    <div class="diff-list">
+                        {#each changeLogs as log}
+                            <div class="diff-item">
+                                <div class="diff-head">
+                                    <span class="diff-field">{prettyField(log.field)}</span>
+                                    <span class="diff-meta">
+                                        <span class="tag is-light">{log.source || '-'}</span>
+                                        <span class="mono">{fmtChangedAt(log.created_at)}</span>
+                                    </span>
+                                </div>
+
+                                <div class="diff-body">
+                                    <div class="diff-col">
+                                        <div class="diff-label">이전</div>
+                                        <div class="diff-box diff-old mono">{log.old_value ?? ''}</div>
+                                    </div>
+                                    <div class="diff-arrow material-icons" aria-hidden="true">arrow_forward</div>
+                                    <div class="diff-col">
+                                        <div class="diff-label">변경</div>
+                                        <div class="diff-box diff-new mono">{log.new_value ?? ''}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </svelte:fragment>
+
+            <svelte:fragment slot="footer">
+                <div class="buttons">
+                    <button class="button" on:click={() => { changeOpen=false; changeOrder=null; changeLogs=[]; }}>닫기</button>
+                </div>
+            </svelte:fragment>
+        </Modal>
+
     </div>
 </section>
 
@@ -427,16 +541,6 @@
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "D2Coding", "Noto Sans Mono CJK", monospace; }
     .text-dim { color:#6b7280; }
     .wrap-gap { gap:.5rem; flex-wrap:wrap; }
-
-    /* ===== 툴바 정리 ===== */
-    .toolbar.sticky { position: sticky; top: 0; z-index: 20; }
-    .tool-grid {
-        display: grid;
-        grid-template-columns: 1.3fr .9fr .8fr .8fr .6fr .6fr .8fr .8fr .7fr 1fr auto;
-        gap: .5rem;
-        align-items: center;
-    }
-    .actions { display:flex; align-items:center; gap:.5rem; justify-self:end; flex-wrap:wrap; }
 
     /* ===== 카드 ===== */
     .stack { display:flex; flex-direction:column; gap:1rem; }
@@ -451,6 +555,12 @@
     .chip__icon { font-size:18px; }
     .chip--ghost { background:#f1f5f9; color:#334155; }
     .chip--info { background:#e6fffb; color:#0b8f7a; }
+
+    /* ✅ 변경이력 칩: 튀게 + 버튼 */
+    .chip--warn { background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; }
+    .chip--btn { border:none; cursor:pointer; }
+    .chip--btn:hover { filter:brightness(.98); }
+    .chip__count { margin-left:.2rem; font-weight:800; }
 
     /* key-value rows */
     .kv { display:grid; grid-template-columns:20px 140px 1fr; align-items:flex-start; gap:.75rem; padding:.35rem 0; border-bottom:1px dashed #eef2f6; }
@@ -468,39 +578,35 @@
 
     .icon-btn { padding:0 8px; height:32px; display:inline-flex; align-items:center; justify-content:center; }
     .icon-btn .material-icons { font-size:24px; }
-
     .selectbox input { width:16px; height:16px; }
 
     /* ===== PRETTY TOOLBAR ===== */
     .card.pretty-toolbar { border:1px solid #eef2f7; border-radius:14px; padding:14px 16px; background:#fff; }
     .pretty-toolbar { position: sticky; top: 0; z-index: 20; box-shadow: 0 8px 16px -16px rgba(0,0,0,.15); }
-
-    .pt-row {
-        display: flex; align-items: center; justify-content: space-between;
-        gap: .75rem; flex-wrap: wrap; margin-bottom: .75rem;
-    }
+    .pt-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; margin-bottom:.75rem; }
     .pt-title { display:flex; align-items:center; gap:.4rem; font-weight:700; color:#334155; }
     .pt-title .material-icons { font-size:20px; color:#64748b; }
-
-    .pt-actions { display:flex; align-items:center; gap:.5rem; flex-wrap: wrap; }
+    .pt-actions { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
     .btn-cluster { display:flex; gap:.4rem; flex-wrap:wrap; }
     .total-chip { margin-left:.25rem; }
-
-    .pt-grid {
-        display: grid;
-        grid-template-columns: repeat(8, minmax(120px, 1fr));
-        gap: .75rem;
-    }
+    .pt-grid { display:grid; grid-template-columns: repeat(8, minmax(120px, 1fr)); gap:.75rem; }
     .pt-field { display:flex; flex-direction:column; gap:.35rem; }
     .pt-field .pt-label { font-size:.8rem; color:#6b7280; font-weight:600; }
     .span-3 { grid-column: span 3; }
+    @media (max-width: 1100px) { .pt-grid { grid-template-columns: repeat(4, minmax(120px, 1fr)); } .span-3 { grid-column: 1 / -1; } }
+    @media (max-width: 640px) { .pt-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 
-    @media (max-width: 1100px) {
-        .pt-grid { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
-        .span-3 { grid-column: 1 / -1; }
-    }
-    @media (max-width: 640px) {
-        .pt-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
-    }
-
+    /* ===== diff UI ===== */
+    .diff-list { display:flex; flex-direction:column; gap:.75rem; }
+    .diff-item { border:1px solid #eef2f7; border-radius:12px; padding:.75rem; background:#fff; }
+    .diff-head { display:flex; justify-content:space-between; align-items:center; gap:.5rem; margin-bottom:.5rem; }
+    .diff-field { font-weight:800; color:#334155; }
+    .diff-meta { display:flex; align-items:center; gap:.5rem; color:#64748b; font-size:.85rem; }
+    .diff-body { display:grid; grid-template-columns:1fr 32px 1fr; gap:.6rem; align-items:stretch; }
+    .diff-col { min-width:0; }
+    .diff-label { font-size:.75rem; color:#6b7280; font-weight:700; margin-bottom:.25rem; }
+    .diff-box { border-radius:10px; padding:.6rem .65rem; border:1px solid #e5e7eb; white-space:pre-wrap; word-break:break-word; }
+    .diff-old { background:#f8fafc; color:#334155; }
+    .diff-new { background:#ecfeff; color:#0f766e; border-color:#a5f3fc; }
+    .diff-arrow { display:flex; align-items:center; justify-content:center; color:#94a3b8; }
 </style>

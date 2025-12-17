@@ -251,4 +251,69 @@ class OrderController extends Controller
             fclose($out);
         }, 200, $headers);
     }
+
+
+    public function exportSelected(Request $req): StreamedResponse
+    {
+        $ids = array_values(array_filter(array_map('intval', (array) $req->input('ids', []))));
+        if (empty($ids)) {
+            abort(422, 'ids가 비어 있습니다.');
+        }
+
+        $query = Order::with(['channel:id,name,code', 'product:id,name'])
+            ->select('orders.*')
+            ->whereIn('id', $ids)
+            ->orderByDesc('ordered_at')
+            ->orderByDesc('id');
+
+        $filename = 'orders_selected_' . now('Asia/Seoul')->format('Ymd_His') . '.csv';
+
+        $headers = [
+            'Content-Type'                  => 'text/csv; charset=UTF-8',
+            'Content-Disposition'           => "attachment; filename=\"$filename\"",
+            'Pragma'                        => 'public',
+            'Cache-Control'                 => 'no-store, no-cache, must-revalidate',
+            'Access-Control-Expose-Headers' => 'Content-Disposition',
+        ];
+
+        return response()->stream(function () use ($query) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF");
+
+            fputcsv($out, [
+                '채널명','채널주문번호','상품명(정규화)','구매자명','구매자휴대폰',
+                '수량','수취인명','수취인우편번호','수취인주소','수취인휴대번호',
+                '배송요구사항','주문일시(KST)'
+            ]);
+
+            $i = 0;
+            foreach ($query->lazy(1000) as $r) {
+                $chName  = $r->channel->name ?? '';
+                $pName   = $r->product->name ?? $r->product_title ?? '';
+                $orderAt = $r->ordered_at ? $r->ordered_at->timezone('Asia/Seoul')->format('Y-m-d H:i:s') : '';
+
+                fputcsv($out, [
+                    $chName,
+                    $r->channel_order_no,
+                    $pName,
+                    $r->buyer_name,
+                    $r->buyer_phone,
+                    (int) $r->quantity,
+                    $r->receiver_name,
+                    $r->receiver_postcode,
+                    $r->receiver_addr_full,
+                    $r->receiver_phone,
+                    $r->delivery_message ?? '',
+                    $orderAt,
+                ]);
+
+                if ((++$i % 500) === 0) {
+                    fflush($out);
+                }
+            }
+
+            fclose($out);
+        }, 200, $headers);
+    }
+
 }

@@ -286,12 +286,7 @@
                 </label>
 
                 <label class="pt-field">
-                    <span class="pt-label">주문일(끝)</span>
-                    <input class="input" type="date" bind:value={dateTo} />
-                </label>
-
-                <label class="pt-field">
-                    <span class="pt-label">시작 시각</span>
+                    <span class="pt-label">주문일(시작 시각)</span>
                     <div class="select is-fullwidth">
                         <select bind:value={hourFrom}>
                             <option value="">00시</option>
@@ -301,7 +296,12 @@
                 </label>
 
                 <label class="pt-field">
-                    <span class="pt-label">끝 시각</span>
+                    <span class="pt-label">주문일(끝)</span>
+                    <input class="input" type="date" bind:value={dateTo} />
+                </label>
+
+                <label class="pt-field">
+                    <span class="pt-label">주문일(끝 시각)</span>
                     <div class="select is-fullwidth">
                         <select bind:value={hourTo}>
                             <option value="">23시</option>

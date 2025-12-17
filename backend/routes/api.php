@@ -71,6 +71,7 @@ Route::prefix('v1')->scopeBindings()->group(function () {
     Route::get('/orders/export', [OrderController::class, 'export']);
     Route::get('orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('orders/{order}', [OrderController::class, 'show'])->name('orders.show');
+    Route::post('orders/export/selected', [OrderController::class, 'exportSelected']);
     Route::match($PUT_PATCH, 'orders/{order}', [OrderController::class, 'update'])->name('orders.update');
     Route::get('/orders/{order}/change-logs', [OrderChangeLogController::class, 'index']);
 

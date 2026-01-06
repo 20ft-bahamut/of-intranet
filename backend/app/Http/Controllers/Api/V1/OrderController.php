@@ -13,6 +13,153 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class OrderController extends Controller
 {
+    /** 공통: 관계 로딩 */
+    private function withRelations()
+    {
+        return ['channel:id,name,code', 'product:id,code,name'];
+    }
+
+    /** 공통: index 응답용 row 정규화 (channel/product + has_change_logs boolean) */
+    private function normalizeIndexRow($row): array
+    {
+        $r = is_array($row) ? $row : $row->toArray();
+
+        $r['channel_name'] = $r['channel']['name'] ?? null;
+        $r['channel_code'] = $r['channel']['code'] ?? null;
+        $r['product_code'] = $r['product']['code'] ?? null;
+
+        // exists 서브쿼리 결과(null/1) → bool
+        if (array_key_exists('has_change_logs', $r)) {
+            $r['has_change_logs'] = !empty($r['has_change_logs']);
+        }
+
+        unset($r['channel'], $r['product']);
+        return $r;
+    }
+
+    /** 공통: export CSV 헤더 */
+    private function csvHeader(): array
+    {
+        return [
+            '채널명','채널주문번호','상품명(정규화)','구매자명','구매자휴대폰',
+            '수량','수취인명','수취인우편번호','수취인주소','수취인휴대번호',
+            '배송요구사항','주문일시(KST)'
+        ];
+    }
+
+    /** 공통: export CSV 한 줄 */
+    private function csvRow(Order $r): array
+    {
+        $chName  = $r->channel->name ?? '';
+        $pName   = $r->product->name ?? $r->product_title ?? '';
+        $orderAt = $r->ordered_at ? $r->ordered_at->timezone('Asia/Seoul')->format('Y-m-d H:i:s') : '';
+
+        return [
+            $chName,
+            $r->channel_order_no,
+            $pName,
+            $r->buyer_name,
+            $r->buyer_phone,
+            (int) $r->quantity,
+            $r->receiver_name,
+            $r->receiver_postcode,
+            $r->receiver_addr_full,
+            $r->receiver_phone,
+            $r->delivery_message ?? '',
+            $orderAt,
+        ];
+    }
+
+    /** 공통: CSV 스트림 응답 */
+    private function streamCsv($query, string $filename): StreamedResponse
+    {
+        $headers = [
+            'Content-Type'                  => 'text/csv; charset=UTF-8',
+            'Content-Disposition'           => "attachment; filename=\"$filename\"",
+            'Pragma'                        => 'public',
+            'Cache-Control'                 => 'no-store, no-cache, must-revalidate',
+            'Access-Control-Expose-Headers' => 'Content-Disposition',
+        ];
+
+        return response()->stream(function () use ($query) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM
+
+            fputcsv($out, $this->csvHeader());
+
+            $i = 0;
+            foreach ($query->lazy(1000) as $r) {
+                /** @var \App\Models\Order $r */
+                fputcsv($out, $this->csvRow($r));
+                if ((++$i % 500) === 0) fflush($out);
+            }
+
+            fclose($out);
+        }, 200, $headers);
+    }
+
+    /** 공통: export용 베이스 쿼리 */
+    private function baseExportQuery(array $filters)
+    {
+        return Order::with($this->withRelations())
+            ->select('orders.*')
+            ->applyFilters($filters);
+    }
+
+    /** 공통: 시간(시) 필터 */
+    private function applyHourFilter($query, $hourFrom, $hourTo)
+    {
+        if ($hourFrom === null && $hourTo === null) return $query;
+
+        $hf = is_numeric($hourFrom) ? max(0, min(23, (int)$hourFrom)) : 0;
+        $ht = is_numeric($hourTo)   ? max(0, min(23, (int)$hourTo))   : 23;
+
+        return $query->whereBetween(DB::raw('HOUR(ordered_at)'), [$hf, $ht]);
+    }
+
+    /** 공통: export 필터 파싱 */
+    private function exportFiltersFromRequest(Request $req): array
+    {
+        $only      = (string) $req->query('only', '');
+        $q         = (string) $req->query('q', '');
+        $channelId = (string) $req->query('channel_id', '');
+        $hasTrack  = $req->query('has_tracking', null);
+        $dateFrom  = $req->query('date_from', null);
+        $dateTo    = $req->query('date_to', null);
+
+        if ($only === 'no-tracking') {
+            $hasTrack = '0';
+        }
+
+        return [
+            'only' => $only,
+            'filters' => [
+                'q'            => $q,
+                'channel_id'   => $channelId,
+                'has_tracking' => $hasTrack,
+                'date_from'    => $dateFrom,
+                'date_to'      => $dateTo,
+            ],
+            'has_tracking' => $hasTrack,
+            'hour_from'    => $req->query('hour_from', null),
+            'hour_to'      => $req->query('hour_to', null),
+        ];
+    }
+
+    /** 공통: update 응답용 정규화 (channel/product 코드 포함) */
+    private function normalizeOrderResponse(Order $order): array
+    {
+        $order->load($this->withRelations());
+
+        $resp = $order->toArray();
+        $resp['channel_name'] = $order->channel->name ?? null;
+        $resp['channel_code'] = $order->channel->code ?? null;
+        $resp['product_code'] = $order->product->code ?? null;
+
+        unset($resp['channel'], $resp['product']);
+        return $resp;
+    }
+
     public function index(Request $req)
     {
         $perPage = (int) $req->query('per_page', 50);
@@ -26,12 +173,10 @@ class OrderController extends Controller
             'date_to'      => $req->query('date_to', null),
         ];
 
-        // ✅ 정렬 파라미터
         $sort = (string) $req->query('sort', 'ordered_at');
         $dir  = strtolower((string) $req->query('dir', 'desc'));
         $dir  = in_array($dir, ['asc','desc'], true) ? $dir : 'desc';
 
-        // ✅ 허용 정렬 필드 매핑(화이트리스트)
         $sortMap = [
             'ordered_at' => 'orders.ordered_at',
             'id'         => 'orders.id',
@@ -41,14 +186,13 @@ class OrderController extends Controller
         ];
         $sortCol = $sortMap[$sort] ?? 'orders.ordered_at';
 
-        $query = Order::with(['channel:id,name,code', 'product:id,code'])
+        $query = Order::with($this->withRelations())
             ->select('orders.*')
-            // ✅ 변경로그 존재 여부(BOOL) 추가
             ->addSelect([
                 'has_change_logs' => DB::table('order_change_logs as ocl')
                     ->selectRaw('1')
                     ->whereColumn('ocl.order_id', 'orders.id')
-                    ->limit(1)
+                    ->limit(1),
             ])
             ->applyFilters($filters)
             ->orderBy($sortCol, $dir);
@@ -59,19 +203,9 @@ class OrderController extends Controller
 
         $paginator = $query->paginate($perPage)->appends($req->query());
 
-        $items = collect($paginator->items())->map(function($row) {
-            $r = is_array($row) ? $row : $row->toArray();
-
-            $r['channel_name'] = $r['channel']['name'] ?? null;
-            $r['channel_code'] = $r['channel']['code'] ?? null;
-            $r['product_code'] = $r['product']['code'] ?? null;
-
-            // ✅ exists 서브쿼리 결과: null/1 형태로 올 수 있어서 boolean으로 정규화
-            $r['has_change_logs'] = !empty($r['has_change_logs']);
-
-            unset($r['channel'], $r['product']);
-            return $r;
-        })->all();
+        $items = collect($paginator->items())
+            ->map(fn($row) => $this->normalizeIndexRow($row))
+            ->all();
 
         return ApiResponse::success([
             'data' => $items,
@@ -109,14 +243,10 @@ class OrderController extends Controller
 
         $order->save();
 
-        $order->load(['channel:id,name,code', 'product:id,code']);
-        $resp = $order->toArray();
-        $resp['channel_name'] = $order->channel->name ?? null;
-        $resp['channel_code'] = $order->channel->code ?? null;
-        $resp['product_code'] = $order->product->code ?? null;
-        unset($resp['channel'], $resp['product']);
-
-        return ApiResponse::success($resp, '주문이 갱신되었습니다.');
+        return ApiResponse::success(
+            $this->normalizeOrderResponse($order),
+            '주문이 갱신되었습니다.'
+        );
     }
 
     public function bulkUpdateTracking(Request $req)
@@ -148,15 +278,17 @@ class OrderController extends Controller
         DB::transaction(function () use (&$affected, $payload) {
             foreach (array_chunk($payload, 500) as $chunk) {
                 $ids = array_column($chunk, 'id');
+
                 DB::table('orders')
                     ->whereIn('id', $ids)
                     ->update([
                         'tracking_no' => DB::raw("CASE id " . implode(' ', array_map(
-                                function ($row) { return "WHEN {$row['id']} THEN '" . addslashes($row['tracking_no']) . "'"; },
+                                fn($row) => "WHEN {$row['id']} THEN '" . addslashes($row['tracking_no']) . "'",
                                 $chunk
                             )) . " END"),
-                        'updated_at' => now()
+                        'updated_at' => now(),
                     ]);
+
                 $affected += count($chunk);
             }
         });
@@ -166,92 +298,23 @@ class OrderController extends Controller
 
     public function export(Request $req): StreamedResponse
     {
-        $ids       = array_filter(array_map('intval', (array) ($req->input('ids', []))));
-        $only      = (string) $req->query('only', '');
-        $q         = (string) $req->query('q', '');
-        $channelId = (string) $req->query('channel_id', '');
-        $hasTrack  = $req->query('has_tracking', null);
-        $dateFrom  = $req->query('date_from', null);
-        $dateTo    = $req->query('date_to', null);
-        $hourFrom  = $req->query('hour_from', null);
-        $hourTo    = $req->query('hour_to', null);
+        $ctx = $this->exportFiltersFromRequest($req);
 
-        if ($only === 'no-tracking') {
-            $hasTrack = '0';
-        }
-
-        $filters = [
-            'q'            => $q,
-            'channel_id'   => $channelId,
-            'has_tracking' => $hasTrack,
-            'date_from'    => $dateFrom,
-            'date_to'      => $dateTo,
-        ];
-
-        $query = Order::with(['channel:id,name,code', 'product:id,name'])
-            ->select('orders.*')
-            ->applyFilters($filters)
+        $query = $this->baseExportQuery($ctx['filters'])
             ->orderByDesc('ordered_at');
 
-        if ($hourFrom !== null || $hourTo !== null) {
-            $hf = is_numeric($hourFrom) ? max(0, min(23, (int)$hourFrom)) : 0;
-            $ht = is_numeric($hourTo)   ? max(0, min(23, (int)$hourTo))   : 23;
-            $query->whereBetween(DB::raw('HOUR(ordered_at)'), [$hf, $ht]);
-        }
+        $query = $this->applyHourFilter($query, $ctx['hour_from'], $ctx['hour_to']);
 
+        $ids = array_values(array_filter(array_map('intval', (array) $req->input('ids', []))));
         if (!empty($ids)) {
             $query->whereIn('id', $ids);
         }
 
-        $suffix   = ($hasTrack === '0' || $only === 'no-tracking') ? 'no-tracking_' : '';
+        $suffix   = ($ctx['has_tracking'] === '0' || $ctx['only'] === 'no-tracking') ? 'no-tracking_' : '';
         $filename = 'orders_' . $suffix . now('Asia/Seoul')->format('Ymd_His') . '.csv';
 
-        $headers = [
-            'Content-Type'                  => 'text/csv; charset=UTF-8',
-            'Content-Disposition'           => "attachment; filename=\"$filename\"",
-            'Pragma'                        => 'public',
-            'Cache-Control'                 => 'no-store, no-cache, must-revalidate',
-            'Access-Control-Expose-Headers' => 'Content-Disposition',
-        ];
-
-        return response()->stream(function () use ($query) {
-            $out = fopen('php://output', 'w');
-            fwrite($out, "\xEF\xBB\xBF");
-
-            fputcsv($out, [
-                '채널명','채널주문번호','상품명(정규화)','구매자명','구매자휴대폰',
-                '수량','수취인명','수취인우편번호','수취인주소','수취인휴대번호',
-                '배송요구사항','주문일시(KST)'
-            ]);
-
-            $i = 0;
-            foreach ($query->lazy(1000) as $r) {
-                $chName  = $r->channel->name ?? '';
-                $pName   = $r->product->name ?? $r->product_title ?? '';
-                $orderAt = $r->ordered_at ? $r->ordered_at->timezone('Asia/Seoul')->format('Y-m-d H:i:s') : '';
-
-                fputcsv($out, [
-                    $chName,
-                    $r->channel_order_no,
-                    $pName,
-                    $r->buyer_name,
-                    $r->buyer_phone,
-                    (int) $r->quantity,
-                    $r->receiver_name,
-                    $r->receiver_postcode,
-                    $r->receiver_addr_full,
-                    $r->receiver_phone,
-                    $r->delivery_message ?? '',
-                    $orderAt,
-                ]);
-
-                if ((++$i % 500) === 0) fflush($out);
-            }
-
-            fclose($out);
-        }, 200, $headers);
+        return $this->streamCsv($query, $filename);
     }
-
 
     public function exportSelected(Request $req): StreamedResponse
     {
@@ -260,7 +323,8 @@ class OrderController extends Controller
             abort(422, 'ids가 비어 있습니다.');
         }
 
-        $query = Order::with(['channel:id,name,code', 'product:id,name'])
+        // 선택 export는 필터/시간조건 없이 ids만 (원하면 filtersFromRequest 붙여도 됨)
+        $query = Order::with($this->withRelations())
             ->select('orders.*')
             ->whereIn('id', $ids)
             ->orderByDesc('ordered_at')
@@ -268,52 +332,6 @@ class OrderController extends Controller
 
         $filename = 'orders_selected_' . now('Asia/Seoul')->format('Ymd_His') . '.csv';
 
-        $headers = [
-            'Content-Type'                  => 'text/csv; charset=UTF-8',
-            'Content-Disposition'           => "attachment; filename=\"$filename\"",
-            'Pragma'                        => 'public',
-            'Cache-Control'                 => 'no-store, no-cache, must-revalidate',
-            'Access-Control-Expose-Headers' => 'Content-Disposition',
-        ];
-
-        return response()->stream(function () use ($query) {
-            $out = fopen('php://output', 'w');
-            fwrite($out, "\xEF\xBB\xBF");
-
-            fputcsv($out, [
-                '채널명','채널주문번호','상품명(정규화)','구매자명','구매자휴대폰',
-                '수량','수취인명','수취인우편번호','수취인주소','수취인휴대번호',
-                '배송요구사항','주문일시(KST)'
-            ]);
-
-            $i = 0;
-            foreach ($query->lazy(1000) as $r) {
-                $chName  = $r->channel->name ?? '';
-                $pName   = $r->product->name ?? $r->product_title ?? '';
-                $orderAt = $r->ordered_at ? $r->ordered_at->timezone('Asia/Seoul')->format('Y-m-d H:i:s') : '';
-
-                fputcsv($out, [
-                    $chName,
-                    $r->channel_order_no,
-                    $pName,
-                    $r->buyer_name,
-                    $r->buyer_phone,
-                    (int) $r->quantity,
-                    $r->receiver_name,
-                    $r->receiver_postcode,
-                    $r->receiver_addr_full,
-                    $r->receiver_phone,
-                    $r->delivery_message ?? '',
-                    $orderAt,
-                ]);
-
-                if ((++$i % 500) === 0) {
-                    fflush($out);
-                }
-            }
-
-            fclose($out);
-        }, 200, $headers);
+        return $this->streamCsv($query, $filename);
     }
-
 }

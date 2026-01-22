@@ -67,7 +67,7 @@ class OrderController extends Controller
             $r->receiver_postcode,
             $r->receiver_addr_full,
             $r->receiver_phone,
-            $r->delivery_message ?? '',
+            $shipping,
             $orderAt,
             "",
             "",

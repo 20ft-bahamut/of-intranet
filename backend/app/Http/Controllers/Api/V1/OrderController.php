@@ -54,6 +54,8 @@ class OrderController extends Controller
         $pName   = $r->product->name ?? $r->product_title ?? '';
         $orderAt = $r->ordered_at ? $r->ordered_at->timezone('Asia/Seoul')->format('Y-m-d H:i:s') : '';
 
+        $shipping = $r->shipping_request ?? ($r->delivery_message ?? '');
+
         return [
             $chName,
             $r->channel_order_no,

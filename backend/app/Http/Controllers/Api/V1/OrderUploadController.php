@@ -18,40 +18,57 @@ use Throwable;
 class OrderUploadController extends Controller
 {
     /**
-     * 업로드 → 미리보기
+     * 업로드 → 미리보기 생성
+     * 응답: stored(상대경로), upload_path(절대경로) 제공
      */
     public function upload(Request $req, Channel $channel, ProcessChannelExcel $proc)
     {
+        // 암호화 채널: 비밀번호 필수
         if ($channel->is_excel_encrypted && !$req->filled('password')) {
-            return ApiResponse::fail('validation_failed', '암호화된 파일은 비밀번호가 필요합니다.', 422);
+            return ApiResponse::fail('validation_failed', '암호화된 파일은 비밀번호가 필요합니다.', 422, [
+                'password' => ['required'],
+            ]);
         }
 
+        // 파일 체크
         $file = $req->file('file');
         if (!$file || !$file->isValid()) {
-            return ApiResponse::fail('validation_failed', '파일 업로드 실패', 422);
+            return ApiResponse::fail('validation_failed', '파일 업로드에 실패했습니다.', 422, [
+                'file' => ['upload_failed'],
+            ]);
         }
 
-        $disk = config('ofintranet.upload_disk', 'local');
-        $root = trim(config('ofintranet.upload_root', 'uploads'), '/');
+        // 저장 경로 구성
+        $disk = (string) config('ofintranet.upload_disk', 'local');
+        $root = trim((string) config('ofintranet.upload_root', 'uploads'), '/');
 
-        $filename = now()->format('Ymd_His') . '_' . Str::uuid() . '.' . ($file->getClientOriginalExtension() ?: 'xlsx');
-        $stored   = $file->storeAs($root.'/'.$channel->code, $filename, $disk);
-        $absPath  = Storage::disk($disk)->path($stored);
+        // 파일명
+        $ext   = $file->getClientOriginalExtension();
+        $ext   = $ext ? $ext : 'xlsx';
+        $uuid  = (string) Str::uuid();
+        $stamp = now()->format('Ymd_His');
+        $filename = $stamp . '_' . $uuid . '.' . $ext;
+
+        // 저장 (상대경로: {root}/{channel_code}/{filename})
+        $stored = $file->storeAs($root . '/' . $channel->code, $filename, $disk);
+        $abs    = Storage::disk($disk)->path($stored);
 
         try {
-            $parsed = $proc->handle($channel, $absPath, (string)$req->input('password', ''));
+            $password = (string) $req->input('password', '');
+            $parsed   = $proc->handle($channel, $abs, $password);
         } catch (Throwable $e) {
             report($e);
-            return ApiResponse::fail('server_error', '엑셀 파싱 실패', 500);
+            return ApiResponse::fail('server_error', '업로드 처리 중 오류가 발생했습니다.', 500);
         }
 
         return ApiResponse::success([
             'preview'     => $parsed['preview'] ?? [],
-            'count'       => count($parsed['rows'] ?? []),
+            'count'       => isset($parsed['rows']) ? count($parsed['rows']) : (count($parsed['preview'] ?? [])),
             'stored'      => $stored,
-            'upload_path' => $absPath,
+            'upload_path' => $abs,
+            'stats'       => $parsed['stats'] ?? null,
             'meta'        => $parsed['meta'] ?? null,
-        ]);
+        ], '업로드 처리 완료');
     }
 
     /**
@@ -59,78 +76,144 @@ class OrderUploadController extends Controller
      */
     private function normalizePhone(?string $raw): ?string
     {
-        if (!$raw) return null;
+        if ($raw === null) return null;
 
-        $d = preg_replace('/\D+/', '', $raw);
+        $d = preg_replace('/\D+/', '', $raw ?? '');
         if ($d === '') return null;
 
+        // 82로 시작하면 국내 국번으로 환원 (예: 821012345678 -> 01012345678)
         if (str_starts_with($d, '82')) {
-            $d = '0'.substr($d, 2);
+            $d = '0' . substr($d, 2);
         }
 
+        // 02 지역번호(서울)
         if (str_starts_with($d, '02')) {
-            return strlen($d) === 9
-                ? sprintf('02-%s-%s', substr($d,2,3), substr($d,5))
-                : sprintf('02-%s-%s', substr($d,2,4), substr($d,6));
+            if (strlen($d) === 9)  return sprintf('02-%s-%s', substr($d, 2, 3), substr($d, 5, 4));
+            if (strlen($d) === 10) return sprintf('02-%s-%s', substr($d, 2, 4), substr($d, 6, 4));
+            return $raw;
         }
 
-        return strlen($d) === 10
-            ? sprintf('%s-%s-%s', substr($d,0,3), substr($d,3,3), substr($d,6))
-            : sprintf('%s-%s-%s', substr($d,0,3), substr($d,3,4), substr($d,7));
+        // 10자리: 3-3-4
+        if (strlen($d) === 10) {
+            return sprintf('%s-%s-%s', substr($d, 0, 3), substr($d, 3, 3), substr($d, 6, 4));
+        }
+        // 11자리: 3-4-4
+        if (strlen($d) === 11) {
+            return sprintf('%s-%s-%s', substr($d, 0, 3), substr($d, 3, 4), substr($d, 7, 4));
+        }
+
+        return $raw;
     }
 
     /**
-     * 미리보기 → DB 반영 (변경이력 포함)
+     * 미리보기 후 → DB 반영(커밋)
+     *
+     * - UNIQUE KEY는 (channel_id, channel_order_no) 기준으로 동작한다고 가정
+     * - tracking_no 없는 재업로드는 기존 tracking_no 덮지 않음(2단계 upsert)
+     * - 변경이력(order_change_logs) 기록: created_at을 "변경시각"으로 사용(※ changed_at 컬럼 없음 대응)
      */
     public function commit(CommitChannelOrdersRequest $req, Channel $channel, ProcessChannelExcel $proc)
     {
-        $disk     = config('ofintranet.upload_disk', 'local');
-        $rawPath  = (string)$req->input('upload_path');
-        $password = (string)$req->input('password', '');
+        $disk     = (string) config('ofintranet.upload_disk', 'local');
+        $rawPath  = (string) $req->input('upload_path', '');
+        $password = (string) $req->input('password', '');
 
-        $path = Str::startsWith($rawPath, '/')
-            ? $rawPath
-            : Storage::disk($disk)->path($rawPath);
+        // 경로 해석: 절대경로 우선, 아니면 Storage 상대경로 → 절대경로
+        $path = $rawPath;
+        if (!$this->isAbsolutePath($path)) {
+            $candidate = Storage::disk($disk)->path($path);
+            if (File::exists($candidate)) $path = $candidate;
+        }
 
         if (!File::exists($path)) {
-            return ApiResponse::fail('not_found', '업로드 파일 없음', 404);
+            \Log::warning('orders.commit not_found', ['raw' => $rawPath, 'resolved' => $path, 'disk' => $disk]);
+            return ApiResponse::fail('not_found', '업로드 파일을 찾을 수 없습니다.', 404);
         }
 
         try {
             $parsed = $proc->handle($channel, $path, $password);
             $rows   = $parsed['rows'] ?? [];
+            if (empty($rows)) {
+                return ApiResponse::fail('validation_failed', '유효한 주문 행이 없습니다.', 422, [
+                    'rows' => ['empty'],
+                ]);
+            }
         } catch (Throwable $e) {
             report($e);
-            return ApiResponse::fail('server_error', '엑셀 재처리 실패', 500);
+            return ApiResponse::fail('server_error', '주문 반영 중 오류가 발생했습니다.', 500);
         }
 
         $now = now();
-        $payload = [];
+        $validPayload = [];
         $failures = [];
+        $reasonAgg = [];
 
-        foreach ($rows as $i => $r) {
-            if (empty($r['channel_order_no']) || empty($r['receiver_name']) || empty($r['ordered_at'])) {
-                $failures[] = ['row' => $i + 1, 'reason' => '필수값 누락'];
+        // 1) 1차로 유효 payload 만들기 + 필요한 키(channel_order_no) 수집
+        $orderNos = [];
+        $idx = 0;
+
+        foreach ($rows as $r) {
+            $idx++;
+
+            // raw source key 필수
+            $rawSourceKey = null;
+            foreach (['raw_payload','_cells','_raw'] as $k) {
+                if (array_key_exists($k, $r)) { $rawSourceKey = $k; break; }
+            }
+            if ($rawSourceKey === null) {
+                $failures[] = [
+                    'index'            => $r['_row'] ?? $idx,
+                    'channel_order_no' => $r['channel_order_no'] ?? null,
+                    'reasons'          => ['raw_payload 누락(엑셀 원본 행 키 없음: raw_payload|_cells|_raw)'],
+                ];
+                $reasonAgg['raw_payload 누락'] = ($reasonAgg['raw_payload 누락'] ?? 0) + 1;
                 continue;
             }
 
-            // 기존 주문 조회 (변경 이력용)
-            $existing = Order::where('channel_id', $channel->id)
-                ->where('channel_order_no', $r['channel_order_no'])
-                ->first();
+            // 필수값 체크
+            $reasons = [];
+            if (empty($r['channel_order_no']))           $reasons[] = 'channel_order_no 누락';
+            if (empty($r['receiver_name']))              $reasons[] = 'receiver_name 누락';
+            if (empty($r['receiver_postcode']))          $reasons[] = 'receiver_postcode 누락';
+            if (empty($r['receiver_addr_full']))         $reasons[] = 'receiver_addr_full 누락';
+            if (empty($r['receiver_phone']))             $reasons[] = 'receiver_phone 누락';
+            if (empty($r['ordered_at']))                 $reasons[] = 'ordered_at 누락';
 
-            // 🔥 변경 이력 기록 (필드 화이트리스트)
-            if ($existing) {
-                $this->logChange($existing, 'tracking_no', $existing->tracking_no, $r['tracking_no'] ?? null);
-                $this->logChange($existing, 'receiver_name', $existing->receiver_name, $r['receiver_name'] ?? null);
-                $this->logChange($existing, 'receiver_phone', $existing->receiver_phone, $this->normalizePhone($r['receiver_phone'] ?? null));
-                $this->logChange($existing, 'receiver_addr_full', $existing->receiver_addr_full, $r['receiver_addr_full'] ?? null);
+            if (!empty($reasons)) {
+                foreach ($reasons as $rr) $reasonAgg[$rr] = ($reasonAgg[$rr] ?? 0) + 1;
+                $failures[] = [
+                    'index'            => $r['_row'] ?? $idx,
+                    'channel_order_no' => $r['channel_order_no'] ?? null,
+                    'reasons'          => $reasons,
+                ];
+                continue;
             }
 
-            $payload[] = [
+            // 원본 payload/json/meta/hash
+            $rawSource = $r[$rawSourceKey];
+            $rawPayloadJson = is_string($rawSource)
+                ? $rawSource
+                : json_encode($rawSource, JSON_UNESCAPED_UNICODE);
+
+            $rawMetaArr = $r['raw_meta'] ?? [
+                'sheet'        => $parsed['meta']['sheet'] ?? ($r['_sheet'] ?? null),
+                'row'          => $r['_row'] ?? $idx,
+                'channel_code' => $channel->code,
+            ];
+            $rawMetaJson = is_string($rawMetaArr) ? $rawMetaArr : json_encode($rawMetaArr, JSON_UNESCAPED_UNICODE);
+
+            $rawHash = $r['raw_hash'] ?? hash('sha256', (string) $rawPayloadJson);
+
+            // 배송요구사항 키 흡수(파서가 delivery_message로 줄 수도 있음)
+            $shippingRequest = $r['shipping_request'] ?? ($r['delivery_message'] ?? null);
+
+            $channelOrderNo = (string) $r['channel_order_no'];
+            $orderNos[] = $channelOrderNo;
+
+            $validPayload[] = [
                 'channel_id'         => $channel->id,
-                'channel_order_no'   => (string)$r['channel_order_no'],
-                'product_id'         => $r['_product_id'] ?? null,
+                'channel_order_no'   => $channelOrderNo,
+                'product_id'         => isset($r['_product_id']) && $r['_product_id'] !== '' ? (int)$r['_product_id'] : (isset($r['product_id']) && $r['product_id'] !== '' ? (int)$r['product_id'] : null),
 
                 'product_title'      => $r['product_title'] ?? null,
                 'option_title'       => $r['option_title'] ?? null,
@@ -139,60 +222,189 @@ class OrderUploadController extends Controller
 
                 'buyer_name'         => $r['buyer_name'] ?? null,
                 'buyer_phone'        => $this->normalizePhone($r['buyer_phone'] ?? null),
+                'buyer_postcode'     => $r['buyer_postcode'] ?? null,
+                'buyer_addr_full'    => $r['buyer_addr_full'] ?? null,
+                'buyer_addr1'        => $r['buyer_addr1'] ?? null,
+                'buyer_addr2'        => $r['buyer_addr2'] ?? null,
 
-                'receiver_name'      => $r['receiver_name'],
+                'receiver_name'      => $r['receiver_name'] ?? null,
                 'receiver_phone'     => $this->normalizePhone($r['receiver_phone'] ?? null),
                 'receiver_postcode'  => $r['receiver_postcode'] ?? null,
                 'receiver_addr_full' => $r['receiver_addr_full'] ?? null,
+                'receiver_addr1'     => $r['receiver_addr1'] ?? null,
+                'receiver_addr2'     => $r['receiver_addr2'] ?? null,
 
-                'ordered_at'         => $r['ordered_at'],
+                // ✅ 여기(빠져있던 것들)
+                'shipping_request'   => $shippingRequest,
+                'customer_note'      => $r['customer_note'] ?? null,
+                'admin_memo'         => $r['admin_memo'] ?? null,
+
+                'ordered_at'         => $r['ordered_at'] ?? null,
                 'status_src'         => $r['status_src'] ?? null,
                 'status_std'         => $r['status_std'] ?? null,
 
-                'raw_payload'        => json_encode($r['_raw'] ?? $r, JSON_UNESCAPED_UNICODE),
-                'raw_hash'           => hash('sha256', json_encode($r['_raw'] ?? $r)),
+                'raw_payload'        => $rawPayloadJson,
+                'raw_meta'           => $rawMetaJson,
+                'raw_hash'           => $rawHash,
+
                 'created_at'         => $now,
                 'updated_at'         => $now,
             ];
         }
 
-        DB::transaction(function () use ($payload) {
-            DB::table('orders')->upsert(
-                $payload,
-                ['channel_id', 'channel_order_no', 'product_id'],
-                [
-                    'product_title','option_title','quantity','tracking_no',
-                    'buyer_name','buyer_phone',
-                    'receiver_name','receiver_phone','receiver_postcode','receiver_addr_full',
+        $received = count($rows);
+        $valid    = count($validPayload);
+        $invalid  = count($failures);
+
+        arsort($reasonAgg);
+        \Log::info('orders.commit validation summary', [
+            'received' => $received,
+            'valid'    => $valid,
+            'invalid'  => $invalid,
+            'top_reasons' => array_slice($reasonAgg, 0, 5, true),
+        ]);
+
+        if ($valid === 0) {
+            return ApiResponse::fail('validation_failed', '모든 행이 검증에서 탈락했습니다.', 422, [
+                'failures' => $failures,
+                'summary'  => $reasonAgg,
+            ]);
+        }
+
+        // 2) 기존 주문들 한방에 로딩(변경이력 비교용) - (channel_id, channel_order_no) 기준
+        $orderNos = array_values(array_unique($orderNos));
+        $existingMap = [];
+        if (!empty($orderNos)) {
+            $existing = Order::query()
+                ->where('channel_id', $channel->id)
+                ->whereIn('channel_order_no', $orderNos)
+                ->get([
+                    'id','channel_id','channel_order_no',
+                    'tracking_no',
+                    'receiver_name','receiver_phone','receiver_addr_full',
+                    'shipping_request',
+                ]);
+
+            foreach ($existing as $ex) {
+                $existingMap[$ex->channel_order_no] = $ex;
+            }
+        }
+
+        // 3) 변경이력 쌓기 (changed_at 컬럼 없음 -> created_at을 변경시각으로 사용)
+        $changeRows = [];
+        foreach ($validPayload as $row) {
+            $ex = $existingMap[$row['channel_order_no']] ?? null;
+            if (!$ex) continue;
+
+            // 비교 대상 필드(원하면 여기 늘리면 됨)
+            $this->appendChangeRow($changeRows, $ex, 'tracking_no',        $ex->tracking_no,        $row['tracking_no'] ?? null,        'excel', $now);
+            $this->appendChangeRow($changeRows, $ex, 'receiver_name',      $ex->receiver_name,      $row['receiver_name'] ?? null,      'excel', $now);
+            $this->appendChangeRow($changeRows, $ex, 'receiver_phone',     $ex->receiver_phone,     $row['receiver_phone'] ?? null,     'excel', $now);
+            $this->appendChangeRow($changeRows, $ex, 'receiver_addr_full', $ex->receiver_addr_full, $row['receiver_addr_full'] ?? null, 'excel', $now);
+            $this->appendChangeRow($changeRows, $ex, 'shipping_request',   $ex->shipping_request,   $row['shipping_request'] ?? null,   'excel', $now);
+        }
+
+        // 4) tracking_no 보호 2단계 upsert
+        $withTracking    = [];
+        $withoutTracking = [];
+        foreach ($validPayload as $row) {
+            $hasTracking = isset($row['tracking_no']) && $row['tracking_no'] !== null && $row['tracking_no'] !== '';
+            if ($hasTracking) $withTracking[] = $row;
+            else              $withoutTracking[] = $row;
+        }
+
+        $affected = 0;
+
+        try {
+            DB::transaction(function () use (&$affected, $withTracking, $withoutTracking, $changeRows) {
+                // 변경이력 먼저 insert (bulk)
+                if (!empty($changeRows)) {
+                    foreach (array_chunk($changeRows, 1000) as $chunk) {
+                        DB::table('order_change_logs')->insert($chunk);
+                    }
+                }
+
+                // UNIQUE: (channel_id, channel_order_no)
+                $uniqueBy = ['channel_id', 'channel_order_no'];
+
+                $commonUpdateCols = [
+                    'product_id',
+                    'product_title','option_title','quantity',
+                    'buyer_name','buyer_phone','buyer_postcode','buyer_addr_full','buyer_addr1','buyer_addr2',
+                    'receiver_name','receiver_phone','receiver_postcode','receiver_addr_full','receiver_addr1','receiver_addr2',
+                    'shipping_request','customer_note','admin_memo',
                     'ordered_at','status_src','status_std',
-                    'raw_payload','raw_hash','updated_at',
-                ]
-            );
-        });
+                    'raw_payload','raw_meta','raw_hash','updated_at',
+                ];
+
+                // (1) 송장번호 있는 건 tracking_no 포함 갱신
+                if (!empty($withTracking)) {
+                    $affected += DB::table('orders')->upsert(
+                        $withTracking,
+                        $uniqueBy,
+                        array_merge($commonUpdateCols, ['tracking_no'])
+                    );
+                }
+
+                // (2) 송장번호 없는 건 tracking_no 제외(기존 값 보존)
+                if (!empty($withoutTracking)) {
+                    $affected += DB::table('orders')->upsert(
+                        $withoutTracking,
+                        $uniqueBy,
+                        $commonUpdateCols // tracking_no 제외
+                    );
+                }
+            });
+        } catch (Throwable $e) {
+            report($e);
+            return ApiResponse::fail('server_error', '주문 반영 중 오류가 발생했습니다.', 500);
+        }
 
         return ApiResponse::success([
-            'received' => count($rows),
-            'saved'    => count($payload),
-            'failed'   => count($failures),
+            'stats' => [
+                'received' => $received,
+                'valid'    => $valid,
+                'invalid'  => $invalid,
+                'affected' => (int) $affected,
+                'changes'  => count($changeRows),
+            ],
             'failures' => $failures,
-        ], '주문 반영 완료');
+            'meta'     => $parsed['meta'] ?? [],
+        ], '주문 DB 반영이 완료되었습니다.');
     }
 
     /**
-     * 변경 이력 기록 (값이 실제로 바뀐 경우만)
+     * 변경 이력 한 줄 추가(값이 실제로 바뀐 경우만)
+     * ※ changed_at 컬럼 없음: created_at을 변경시각으로 사용
      */
-    private function logChange(Order $order, string $field, $old, $new): void
+    private function appendChangeRow(array &$rows, Order $order, string $field, $old, $new, string $source, $now): void
     {
-        if ($new === null || $old === $new) return;
+        // "새 값이 비어있으면 기록 안 함" 정책 (원하면 바꾸면 됨)
+        if ($new === null || $new === '') return;
 
-        DB::table('order_change_logs')->insert([
-            'order_id'   => $order->id,
+        $oldStr = $old === null ? '' : (string) $old;
+        $newStr = (string) $new;
+
+        if ($oldStr === $newStr) return;
+
+        $rows[] = [
+            'order_id'   => (int) $order->id,
             'field'      => $field,
-            'old_value'  => (string)$old,
-            'new_value'  => (string)$new,
-            'source'     => 'excel',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+            'old_value'  => $oldStr,
+            'new_value'  => $newStr,
+            'source'     => $source,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
+    }
+
+    /** 절대경로 판별 */
+    private function isAbsolutePath(string $path): bool
+    {
+        if ($path === '') return false;
+        if (Str::startsWith($path, '/')) return true;                 // *nix
+        if (preg_match('/^[A-Za-z]:\\\\/', $path) === 1) return true; // Windows (C:\)
+        if (Str::startsWith($path, '\\\\')) return true;              // Windows UNC (\\server\share)
+        return false;
     }
 }

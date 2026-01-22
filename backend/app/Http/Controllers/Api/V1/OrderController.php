@@ -67,6 +67,8 @@ class OrderController extends Controller
             $r->receiver_phone,
             $r->delivery_message ?? '',
             $orderAt,
+            "",
+            "",
         ];
     }
 

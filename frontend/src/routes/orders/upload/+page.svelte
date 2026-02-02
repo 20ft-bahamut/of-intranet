@@ -225,7 +225,8 @@
                             <div class="control">
                                 <div class="file has-name is-fullwidth">
                                     <label class="file-label">
-                                        <input id="file" class="file-input" type="file" accept=".xlsx,.xlsm" bind:this={fileInput} on:change={onFileChange} />
+                                        <input id="file" class="file-input" type="file" accept=".xlsx,.xlsm,.xls,.csv"
+                                               bind:this={fileInput} on:change={onFileChange} />
                                         <span class="file-cta">
                                             <span class="file-icon"><span class="material-icons">attach_file</span></span>
                                             <span class="file-label">파일 선택</span>

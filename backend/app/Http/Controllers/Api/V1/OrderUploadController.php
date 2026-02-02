@@ -9,6 +9,8 @@ use App\Models\Channel;
 use App\Models\Order;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
@@ -43,8 +45,7 @@ class OrderUploadController extends Controller
         $root = trim((string) config('ofintranet.upload_root', 'uploads'), '/');
 
         // 파일명
-        $ext   = $file->getClientOriginalExtension();
-        $ext   = $ext ? $ext : 'xlsx';
+        $ext   = $file->getClientOriginalExtension() ?: 'xlsx';
         $uuid  = (string) Str::uuid();
         $stamp = now()->format('Ymd_His');
         $filename = $stamp . '_' . $uuid . '.' . $ext;
@@ -63,7 +64,7 @@ class OrderUploadController extends Controller
 
         return ApiResponse::success([
             'preview'     => $parsed['preview'] ?? [],
-            'count'       => isset($parsed['rows']) ? count($parsed['rows']) : (count($parsed['preview'] ?? [])),
+            'count'       => isset($parsed['rows']) ? count($parsed['rows']) : count($parsed['preview'] ?? []),
             'stored'      => $stored,
             'upload_path' => $abs,
             'stats'       => $parsed['stats'] ?? null,
@@ -97,6 +98,7 @@ class OrderUploadController extends Controller
         if (strlen($d) === 10) {
             return sprintf('%s-%s-%s', substr($d, 0, 3), substr($d, 3, 3), substr($d, 6, 4));
         }
+
         // 11자리: 3-4-4
         if (strlen($d) === 11) {
             return sprintf('%s-%s-%s', substr($d, 0, 3), substr($d, 3, 4), substr($d, 7, 4));
@@ -106,11 +108,44 @@ class OrderUploadController extends Controller
     }
 
     /**
+     * ordered_at 정규화
+     * - 없으면 $fallback 사용
+     * - 문자열이면 Carbon parse 시도, 실패 시 fallback
+     */
+    private function normalizeOrderedAt($value, Carbon $fallback): Carbon
+    {
+        if ($value === null || $value === '') {
+            return $fallback;
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return Carbon::instance($value);
+        }
+
+        if (is_numeric($value)) {
+            // 엑셀 serial 등 숫자 날짜는 여기서 처리하지 않음(파서에서 이미 처리하는 전제가 일반적)
+            // 그래도 들어오면 fallback
+            return $fallback;
+        }
+
+        if (is_string($value)) {
+            try {
+                return Carbon::parse($value);
+            } catch (Throwable $e) {
+                return $fallback;
+            }
+        }
+
+        return $fallback;
+    }
+
+    /**
      * 미리보기 후 → DB 반영(커밋)
      *
-     * - UNIQUE KEY는 (channel_id, channel_order_no) 기준으로 동작한다고 가정
+     * - UNIQUE KEY: (channel_id, channel_order_no)
      * - tracking_no 없는 재업로드는 기존 tracking_no 덮지 않음(2단계 upsert)
-     * - 변경이력(order_change_logs) 기록: created_at을 "변경시각"으로 사용(※ changed_at 컬럼 없음 대응)
+     * - 변경이력(order_change_logs) 기록: created_at을 변경시각으로 사용(※ changed_at 컬럼 없음)
+     * - ordered_at 없으면 업로드(커밋) 시각으로 대체
      */
     public function commit(CommitChannelOrdersRequest $req, Channel $channel, ProcessChannelExcel $proc)
     {
@@ -144,20 +179,26 @@ class OrderUploadController extends Controller
         }
 
         $now = now();
+        $uploadId  = (string) Str::uuid();        // ✅ 변경이력 배치 묶음
+        $changedBy = Auth::id();                  // ✅ 로그인 사용자(없으면 null)
+        $source    = 'excel';                     // ✅ 출처
+
         $validPayload = [];
         $failures = [];
         $reasonAgg = [];
 
-        // 1) 1차로 유효 payload 만들기 + 필요한 키(channel_order_no) 수집
         $orderNos = [];
         $idx = 0;
 
+        $orderedAtFilled = 0;
+
+        // 1) 유효 payload 만들기
         foreach ($rows as $r) {
             $idx++;
 
             // raw source key 필수
             $rawSourceKey = null;
-            foreach (['raw_payload','_cells','_raw'] as $k) {
+            foreach (['raw_payload', '_cells', '_raw'] as $k) {
                 if (array_key_exists($k, $r)) { $rawSourceKey = $k; break; }
             }
             if ($rawSourceKey === null) {
@@ -170,14 +211,13 @@ class OrderUploadController extends Controller
                 continue;
             }
 
-            // 필수값 체크
+            // 필수값 체크 (ordered_at은 더 이상 필수가 아님)
             $reasons = [];
-            if (empty($r['channel_order_no']))           $reasons[] = 'channel_order_no 누락';
-            if (empty($r['receiver_name']))              $reasons[] = 'receiver_name 누락';
-            if (empty($r['receiver_postcode']))          $reasons[] = 'receiver_postcode 누락';
-            if (empty($r['receiver_addr_full']))         $reasons[] = 'receiver_addr_full 누락';
-            if (empty($r['receiver_phone']))             $reasons[] = 'receiver_phone 누락';
-            if (empty($r['ordered_at']))                 $reasons[] = 'ordered_at 누락';
+            if (empty($r['channel_order_no']))   $reasons[] = 'channel_order_no 누락';
+            if (empty($r['receiver_name']))      $reasons[] = 'receiver_name 누락';
+            if (empty($r['receiver_postcode']))  $reasons[] = 'receiver_postcode 누락';
+            if (empty($r['receiver_addr_full'])) $reasons[] = 'receiver_addr_full 누락';
+            if (empty($r['receiver_phone']))     $reasons[] = 'receiver_phone 누락';
 
             if (!empty($reasons)) {
                 foreach ($reasons as $rr) $reasonAgg[$rr] = ($reasonAgg[$rr] ?? 0) + 1;
@@ -204,8 +244,14 @@ class OrderUploadController extends Controller
 
             $rawHash = $r['raw_hash'] ?? hash('sha256', (string) $rawPayloadJson);
 
-            // 배송요구사항 키 흡수(파서가 delivery_message로 줄 수도 있음)
+            // 배송요구사항 키 흡수
             $shippingRequest = $r['shipping_request'] ?? ($r['delivery_message'] ?? null);
+
+            // ordered_at: 없으면 커밋 시각으로 대체
+            $orderedAt = $this->normalizeOrderedAt($r['ordered_at'] ?? null, $now);
+            if (($r['ordered_at'] ?? null) === null || ($r['ordered_at'] ?? '') === '') {
+                $orderedAtFilled++;
+            }
 
             $channelOrderNo = (string) $r['channel_order_no'];
             $orderNos[] = $channelOrderNo;
@@ -234,12 +280,11 @@ class OrderUploadController extends Controller
                 'receiver_addr1'     => $r['receiver_addr1'] ?? null,
                 'receiver_addr2'     => $r['receiver_addr2'] ?? null,
 
-                // ✅ 여기(빠져있던 것들)
                 'shipping_request'   => $shippingRequest,
                 'customer_note'      => $r['customer_note'] ?? null,
                 'admin_memo'         => $r['admin_memo'] ?? null,
 
-                'ordered_at'         => $r['ordered_at'] ?? null,
+                'ordered_at'         => $orderedAt,
                 'status_src'         => $r['status_src'] ?? null,
                 'status_std'         => $r['status_std'] ?? null,
 
@@ -262,6 +307,7 @@ class OrderUploadController extends Controller
             'valid'    => $valid,
             'invalid'  => $invalid,
             'top_reasons' => array_slice($reasonAgg, 0, 5, true),
+            'ordered_at_filled' => $orderedAtFilled,
         ]);
 
         if ($valid === 0) {
@@ -271,17 +317,18 @@ class OrderUploadController extends Controller
             ]);
         }
 
-        // 2) 기존 주문들 한방에 로딩(변경이력 비교용) - (channel_id, channel_order_no) 기준
+        // 2) 기존 주문들 로딩(변경이력 비교용) - (channel_id, channel_order_no)
         $orderNos = array_values(array_unique($orderNos));
         $existingMap = [];
+
         if (!empty($orderNos)) {
             $existing = Order::query()
                 ->where('channel_id', $channel->id)
                 ->whereIn('channel_order_no', $orderNos)
                 ->get([
-                    'id','channel_id','channel_order_no',
+                    'id', 'channel_id', 'channel_order_no',
                     'tracking_no',
-                    'receiver_name','receiver_phone','receiver_addr_full',
+                    'receiver_name', 'receiver_phone', 'receiver_addr_full',
                     'shipping_request',
                 ]);
 
@@ -290,18 +337,18 @@ class OrderUploadController extends Controller
             }
         }
 
-        // 3) 변경이력 쌓기 (changed_at 컬럼 없음 -> created_at을 변경시각으로 사용)
+        // 3) 변경이력 쌓기 (created_at 사용, upload_id/source/changed_by 채움)
         $changeRows = [];
         foreach ($validPayload as $row) {
             $ex = $existingMap[$row['channel_order_no']] ?? null;
             if (!$ex) continue;
 
-            // 비교 대상 필드(원하면 여기 늘리면 됨)
-            $this->appendChangeRow($changeRows, $ex, 'tracking_no',        $ex->tracking_no,        $row['tracking_no'] ?? null,        'excel', $now);
-            $this->appendChangeRow($changeRows, $ex, 'receiver_name',      $ex->receiver_name,      $row['receiver_name'] ?? null,      'excel', $now);
-            $this->appendChangeRow($changeRows, $ex, 'receiver_phone',     $ex->receiver_phone,     $row['receiver_phone'] ?? null,     'excel', $now);
-            $this->appendChangeRow($changeRows, $ex, 'receiver_addr_full', $ex->receiver_addr_full, $row['receiver_addr_full'] ?? null, 'excel', $now);
-            $this->appendChangeRow($changeRows, $ex, 'shipping_request',   $ex->shipping_request,   $row['shipping_request'] ?? null,   'excel', $now);
+            // 비교 대상 필드(필요하면 추가)
+            $this->appendChangeRow($changeRows, $ex, $uploadId, $changedBy, 'tracking_no',        $ex->tracking_no,        $row['tracking_no'] ?? null,        $source, $now);
+            $this->appendChangeRow($changeRows, $ex, $uploadId, $changedBy, 'receiver_name',      $ex->receiver_name,      $row['receiver_name'] ?? null,      $source, $now);
+            $this->appendChangeRow($changeRows, $ex, $uploadId, $changedBy, 'receiver_phone',     $ex->receiver_phone,     $row['receiver_phone'] ?? null,     $source, $now);
+            $this->appendChangeRow($changeRows, $ex, $uploadId, $changedBy, 'receiver_addr_full', $ex->receiver_addr_full, $row['receiver_addr_full'] ?? null, $source, $now);
+            $this->appendChangeRow($changeRows, $ex, $uploadId, $changedBy, 'shipping_request',   $ex->shipping_request,   $row['shipping_request'] ?? null,   $source, $now);
         }
 
         // 4) tracking_no 보호 2단계 upsert
@@ -324,17 +371,16 @@ class OrderUploadController extends Controller
                     }
                 }
 
-                // UNIQUE: (channel_id, channel_order_no)
                 $uniqueBy = ['channel_id', 'channel_order_no'];
 
                 $commonUpdateCols = [
                     'product_id',
-                    'product_title','option_title','quantity',
-                    'buyer_name','buyer_phone','buyer_postcode','buyer_addr_full','buyer_addr1','buyer_addr2',
-                    'receiver_name','receiver_phone','receiver_postcode','receiver_addr_full','receiver_addr1','receiver_addr2',
-                    'shipping_request','customer_note','admin_memo',
-                    'ordered_at','status_src','status_std',
-                    'raw_payload','raw_meta','raw_hash','updated_at',
+                    'product_title', 'option_title', 'quantity',
+                    'buyer_name', 'buyer_phone', 'buyer_postcode', 'buyer_addr_full', 'buyer_addr1', 'buyer_addr2',
+                    'receiver_name', 'receiver_phone', 'receiver_postcode', 'receiver_addr_full', 'receiver_addr1', 'receiver_addr2',
+                    'shipping_request', 'customer_note', 'admin_memo',
+                    'ordered_at', 'status_src', 'status_std',
+                    'raw_payload', 'raw_meta', 'raw_hash', 'updated_at',
                 ];
 
                 // (1) 송장번호 있는 건 tracking_no 포함 갱신
@@ -351,7 +397,7 @@ class OrderUploadController extends Controller
                     $affected += DB::table('orders')->upsert(
                         $withoutTracking,
                         $uniqueBy,
-                        $commonUpdateCols // tracking_no 제외
+                        $commonUpdateCols
                     );
                 }
             });
@@ -362,11 +408,13 @@ class OrderUploadController extends Controller
 
         return ApiResponse::success([
             'stats' => [
-                'received' => $received,
-                'valid'    => $valid,
-                'invalid'  => $invalid,
-                'affected' => (int) $affected,
-                'changes'  => count($changeRows),
+                'received'          => $received,
+                'valid'             => $valid,
+                'invalid'           => $invalid,
+                'affected'          => (int) $affected,
+                'changes'           => count($changeRows),
+                'ordered_at_filled' => (int) $orderedAtFilled,
+                'upload_id'         => $uploadId,
             ],
             'failures' => $failures,
             'meta'     => $parsed['meta'] ?? [],
@@ -376,10 +424,22 @@ class OrderUploadController extends Controller
     /**
      * 변경 이력 한 줄 추가(값이 실제로 바뀐 경우만)
      * ※ changed_at 컬럼 없음: created_at을 변경시각으로 사용
+     *
+     * 정책:
+     * - 새 값이 빈값(null/'')이면 기록하지 않음 (기존 정책 유지)
+     *   -> "비우기"를 변경으로 기록해야 한다면 이 정책만 바꾸면 됨
      */
-    private function appendChangeRow(array &$rows, Order $order, string $field, $old, $new, string $source, $now): void
-    {
-        // "새 값이 비어있으면 기록 안 함" 정책 (원하면 바꾸면 됨)
+    private function appendChangeRow(
+        array &$rows,
+        Order $order,
+        string $uploadId,
+        ?int $changedBy,
+        string $field,
+        $old,
+        $new,
+        string $source,
+        $now
+    ): void {
         if ($new === null || $new === '') return;
 
         $oldStr = $old === null ? '' : (string) $old;
@@ -389,10 +449,12 @@ class OrderUploadController extends Controller
 
         $rows[] = [
             'order_id'   => (int) $order->id,
+            'upload_id'  => $uploadId,
+            'source'     => $source,
             'field'      => $field,
             'old_value'  => $oldStr,
             'new_value'  => $newStr,
-            'source'     => $source,
+            'changed_by' => $changedBy,
             'created_at' => $now,
             'updated_at' => $now,
         ];

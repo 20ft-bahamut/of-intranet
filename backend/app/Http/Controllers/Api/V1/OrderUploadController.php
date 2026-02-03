@@ -379,7 +379,8 @@ class OrderUploadController extends Controller
                     'buyer_name', 'buyer_phone', 'buyer_postcode', 'buyer_addr_full', 'buyer_addr1', 'buyer_addr2',
                     'receiver_name', 'receiver_phone', 'receiver_postcode', 'receiver_addr_full', 'receiver_addr1', 'receiver_addr2',
                     'shipping_request', 'customer_note', 'admin_memo',
-                    'ordered_at', 'status_src', 'status_std',
+                    //'ordered_at',
+                    'status_src', 'status_std',
                     'raw_payload', 'raw_meta', 'raw_hash', 'updated_at',
                 ];
 

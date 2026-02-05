@@ -39,10 +39,21 @@
     const selectAllVisible=()=>{ rows.forEach(r=>selectedIds.add(r.id)); selectedIds=new Set(selectedIds); };
     const unselectAllVisible=()=>{ rows.forEach(r=>selectedIds.delete(r.id)); selectedIds=new Set(selectedIds); };
 
-    // 펼침
-    const expanded=new Map();
-    const isOpen=(id,key)=>expanded.get(id)?.[key];
-    const toggleOpen=(id,key)=>{ const o=expanded.get(id)??{}; o[key]=!o[key]; expanded.set(id,o); };
+    // 펼침 (중요: Map 변경 후 재할당해야 Svelte가 렌더링 갱신함)
+    let expanded = new Map();
+    const isOpen = (id, key) => !!expanded.get(id)?.[key];
+    const toggleOpen = (id, key) => {
+        const o = expanded.get(id) ?? {};
+        o[key] = !o[key];
+        expanded.set(id, o);
+        expanded = new Map(expanded); // ✅ 리렌더 트리거
+    };
+
+    // "더보기"를 길 때만 노출
+    const shouldMore = (s, minLen = 40) => {
+        if (s === null || s === undefined) return false;
+        return String(s).length > minLen;
+    };
 
     // 메모 모달
     let memoOpen=false, memoRow=null, memoText='';
@@ -56,6 +67,53 @@
         }catch(e){ toast.danger(e.message||String(e)); }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // 송장번호/고객요청사항 수정 모달 (세로형 최종안)
+    // ─────────────────────────────────────────────────────────────
+    let shipOpen = false;
+    let shipRow = null;
+    let shipTracking = '';
+    let shipReq = '';
+    let shipSaving = false;
+
+    function openShipEdit(row){
+        shipRow = row;
+        shipTracking = row?.tracking_no ?? '';
+        shipReq = row?.shipping_request ?? '';
+        shipOpen = true;
+        setTimeout(() => document.getElementById('shipTrackingInput')?.focus(), 0);
+    }
+
+    function closeShipEdit(){
+        shipOpen = false;
+        shipRow = null;
+        shipTracking = '';
+        shipReq = '';
+        shipSaving = false;
+    }
+
+    async function saveShipEdit(){
+        if(!shipRow) return;
+        shipSaving = true;
+        try{
+            const res = await fetchJson(`/orders/${shipRow.id}`,{
+                method:'PATCH',
+                body: JSON.stringify({
+                    tracking_no: (shipTracking ?? '').trim() === '' ? null : shipTracking,
+                    shipping_request: (shipReq ?? '').trim() === '' ? null : shipReq,
+                })
+            });
+            if(res?.ok === false) throw new Error(res.message || '저장 실패');
+            toast.success('저장 완료');
+            closeShipEdit();
+            await loadOrders();
+        }catch(e){
+            toast.danger(e.message || String(e));
+        }finally{
+            shipSaving = false;
+        }
+    }
+
     // ===== 변경이력 모달/표시 =====
     let changeOpen = false;
     let changeOrder = null;
@@ -63,12 +121,12 @@
     let changeLoading = false;
 
     // ✅ 백엔드 컬럼명 고정: has_change_logs
-    // (혹시 count 내려주면 같이 표시하려고만 열어둠)
     const hasChanges = (r) => !!(r?.has_change_logs);
     const changeCount = (r) => (r?.change_logs_count ?? r?.change_count ?? r?.changes_count ?? null);
 
     const FIELD_LABEL = {
         tracking_no: '송장번호',
+        shipping_request: '고객요청사항',
         receiver_name: '수취인명',
         receiver_phone: '수취인 전화',
         receiver_addr_full: '수취인 주소',
@@ -84,14 +142,16 @@
     const fmtChangedAt = (s) => (s ? String(s).replace('T',' ').slice(0,19) : '');
 
     async function openChanges(row){
+        if(!row || !row.id){
+            toast.danger('변경이력을 열 수 없습니다. (order id 없음)');
+            return;
+        }
         changeOpen = true;
         changeOrder = row;
         changeLogs = [];
         changeLoading = true;
 
         try{
-            // ✅ 네 백엔드 엔드포인트에 맞춰라
-            // 예: GET /api/v1/orders/{id}/change-logs
             const res = await fetchJson(`/orders/${row.id}/change-logs`);
             if(!res.ok) throw new Error(res.message || '변경 이력 조회 실패');
             changeLogs = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
@@ -117,6 +177,7 @@
         sortField=s.sort??'ordered_at'; sortDir=s.dir??'desc';
         currentPage=s.page??1; perPage=s.per_page??50;
     }
+
     function writeQS(patch={}){
         qsCtl.set({
             q, channel_id:channelId, has_tracking:hasTracking,
@@ -233,26 +294,26 @@
 
                 <div class="pt-actions">
                     <div class="btn-cluster">
-                        <button class="button is-link" on:click={onSearch} disabled={loading} title="검색">
+                        <button class="button is-link" on:click={onSearch} disabled={loading} title="검색" type="button">
                             <span class="material-icons">search</span><span>검색</span>
                         </button>
-                        <button class="button" on:click={() => { writeQS(); loadOrders(); }} disabled={loading} title="새로고침">
+                        <button class="button" on:click={() => { writeQS(); loadOrders(); }} disabled={loading} title="새로고침" type="button">
                             <span class="material-icons">refresh</span><span>새로고침</span>
                         </button>
-                        <button class="button is-light" on:click={onReset} disabled={loading}>
+                        <button class="button is-light" on:click={onReset} disabled={loading} type="button">
                             <span class="material-icons">restart_alt</span><span>초기화</span>
                         </button>
                     </div>
 
                     <div class="btn-cluster">
-                        <button class="button is-success is-light" on:click={downloadSelectedCsv} disabled={selectedIds.size===0 || loading} title="선택된 항목 CSV">
+                        <button class="button is-success is-light" on:click={downloadSelectedCsv} disabled={selectedIds.size===0 || loading} title="선택된 항목 CSV" type="button">
                             <span class="material-icons">download</span><span>선택</span>
                             {#if selectedIds.size>0}<span class="tag is-success is-light ml-1">{selectedIds.size}</span>{/if}
                         </button>
-                        <button class="button is-primary is-light" on:click={downloadAllCsv} disabled={loading} title="현재 조건 전체 CSV">
+                        <button class="button is-primary is-light" on:click={downloadAllCsv} disabled={loading} title="현재 조건 전체 CSV" type="button">
                             <span class="material-icons">file_download</span><span>전체</span>
                         </button>
-                        <button class="button is-warning is-light" on:click={downloadNoTrackingCsv} disabled={loading} title="송장없음만 CSV">
+                        <button class="button is-warning is-light" on:click={downloadNoTrackingCsv} disabled={loading} title="송장없음만 CSV" type="button">
                             <span class="material-icons">file_download</span><span>송장없음</span>
                         </button>
                     </div>
@@ -348,15 +409,15 @@
 
         <div class="is-flex is-justify-content-space-between is-align-items-center mb-3 wrap-gap">
             <div class="buttons">
-                <button class="button is-light" on:click={selectAllVisible}>이 페이지 전체선택</button>
-                <button class="button is-light" on:click={unselectAllVisible}>이 페이지 선택해제</button>
+                <button class="button is-light" on:click={selectAllVisible} type="button">이 페이지 전체선택</button>
+                <button class="button is-light" on:click={unselectAllVisible} type="button">이 페이지 선택해제</button>
                 {#if selectedIds.size>0}
-                    <button class="button is-white" on:click={clearSelection}>전체 해제({selectedIds.size})</button>
+                    <button class="button is-white" on:click={clearSelection} type="button">전체 해제({selectedIds.size})</button>
                 {/if}
             </div>
             <nav class="pagination is-small">
-                <button class="pagination-previous" on:click={() => changePage(currentPage-1)} disabled={currentPage<=1}>이전</button>
-                <button class="pagination-next" on:click={() => changePage(currentPage+1)} disabled={currentPage>=lastPage}>다음</button>
+                <button class="pagination-previous" on:click={() => changePage(currentPage-1)} disabled={currentPage<=1} type="button">이전</button>
+                <button class="pagination-next" on:click={() => changePage(currentPage+1)} disabled={currentPage>=lastPage} type="button">다음</button>
                 <ul class="pagination-list"><li><span class="pagination-link is-current">{currentPage}/{lastPage}</span></li></ul>
             </nav>
         </div>
@@ -376,7 +437,6 @@
                                     <span class="chip"><span class="chip__icon material-icons">storefront</span>{channelLabel(r)}</span>
                                     {#if r.status_std}<span class="chip chip--info">{r.status_std}</span>{/if}
 
-                                    <!-- ✅ 변경이력 표시: has_change_logs 기준 -->
                                     {#if hasChanges(r)}
                                         <button type="button" class="chip chip--warn chip--btn" title="변경 이력 보기" on:click={() => openChanges(r)}>
                                             <span class="chip__icon material-icons">history</span>
@@ -399,7 +459,11 @@
                                 <div class="kv__label">주문번호</div>
                                 <div class="kv__value mono">
                                     <div class:clamp-1={!isOpen(r.id,'orderno')}>{r.channel_order_no}</div>
-                                    <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'orderno')}>{isOpen(r.id,'orderno')?'접기':'더보기'}</button>
+                                    {#if shouldMore(r.channel_order_no, 28)}
+                                        <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'orderno')}>
+                                            {isOpen(r.id,'orderno')?'접기':'더보기'}
+                                        </button>
+                                    {/if}
                                 </div>
                             </div>
 
@@ -412,20 +476,43 @@
                                         <span class="tag is-info is-light ml-1">x{r.quantity}</span>
                                     </div>
                                     <div class="text-dim is-size-7">표준코드: <code class="mono">{r.product_code || (r.product && r.product.code) || '-'}</code></div>
-                                    <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'product')}>{isOpen(r.id,'product')?'접기':'더보기'}</button>
+                                    {#if shouldMore((r.product_title||'') + ' ' + (r.option_title||''), 50)}
+                                        <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'product')}>
+                                            {isOpen(r.id,'product')?'접기':'더보기'}
+                                        </button>
+                                    {/if}
                                 </div>
                             </div>
 
                             <div class="kv"><div class="kv__icon material-icons">local_shipping</div><div class="kv__label">송장번호</div><div class="kv__value mono">{r.tracking_no || '-'}</div></div>
+
+                            <div class="kv">
+                                <div class="kv__icon material-icons">chat</div>
+                                <div class="kv__label">고객요청사항</div>
+                                <div class="kv__value">
+                                    <div class:clamp-2={!isOpen(r.id,'shipreq')}>{r.shipping_request || '-'}</div>
+                                    {#if shouldMore(r.shipping_request, 30)}
+                                        <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'shipreq')}>
+                                            {isOpen(r.id,'shipreq')?'접기':'더보기'}
+                                        </button>
+                                    {/if}
+                                </div>
+                            </div>
+
                             <div class="kv"><div class="kv__icon material-icons">person</div><div class="kv__label">구매자</div><div class="kv__value">{r.buyer_name || '-'} · <span class="mono">{r.buyer_phone || '-'}</span></div></div>
                             <div class="kv"><div class="kv__icon material-icons">badge</div><div class="kv__label">수취인/전화</div><div class="kv__value"><strong>{r.receiver_name}</strong> · <span class="mono">{r.receiver_phone}</span></div></div>
                             <div class="kv"><div class="kv__icon material-icons">markunread_mailbox</div><div class="kv__label">우편번호</div><div class="kv__value mono">{r.receiver_postcode}</div></div>
+
                             <div class="kv">
                                 <div class="kv__icon material-icons">home</div>
                                 <div class="kv__label">주소</div>
                                 <div class="kv__value">
                                     <div class:clamp-2={!isOpen(r.id,'addr')}>{r.receiver_addr_full}</div>
-                                    <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'addr')}>{isOpen(r.id,'addr')?'접기':'더보기'}</button>
+                                    {#if shouldMore(r.receiver_addr_full, 40)}
+                                        <button type="button" class="btn-more" on:click={()=>toggleOpen(r.id,'addr')}>
+                                            {isOpen(r.id,'addr')?'접기':'더보기'}
+                                        </button>
+                                    {/if}
                                 </div>
                             </div>
                         </div>
@@ -433,12 +520,16 @@
                         <div class="of-card__foot">
                             <div class="foot-left">
                                 <NoteBadge note={r.admin_memo} title="관리자 메모" />
-                                <button class="button is-light is-small icon-btn" title="메모 편집" on:click={()=>openMemo(r)}>
+                                <button class="button is-light is-small icon-btn" title="메모 편집" on:click={()=>openMemo(r)} type="button">
                                     <span class="material-icons">edit_note</span>
+                                </button>
+
+                                <button class="button is-light is-small icon-btn" title="송장/요청사항 수정" on:click={()=>openShipEdit(r)} type="button">
+                                    <span class="material-icons">edit</span>
                                 </button>
                             </div>
                             <div class="foot-right">
-                                <button class="button is-light is-small icon-btn" title="새로고침" on:click={() => { writeQS(); loadOrders(); }}>
+                                <button class="button is-light is-small icon-btn" title="새로고침" on:click={() => { writeQS(); loadOrders(); }} type="button">
                                     <span class="material-icons">refresh</span>
                                 </button>
                                 <span class="text-dim is-size-7 ml-2">업데이트 <span class="mono">{displayDate(r.updated_at)}</span></span>
@@ -452,15 +543,15 @@
         <div class="is-flex is-justify-content-space-between is-align-items-center mt-4 wrap-gap">
             <span class="tag is-light">총 {total}건</span>
             <nav class="pagination is-small">
-                <button class="pagination-previous" on:click={() => changePage(currentPage-1)} disabled={currentPage<=1}>이전</button>
-                <button class="pagination-next" on:click={() => changePage(currentPage+1)} disabled={currentPage>=lastPage}>다음</button>
+                <button class="pagination-previous" on:click={() => changePage(currentPage-1)} disabled={currentPage<=1} type="button">이전</button>
+                <button class="pagination-next" on:click={() => changePage(currentPage+1)} disabled={currentPage>=lastPage} type="button">다음</button>
                 <ul class="pagination-list"><li><span class="pagination-link is-current">{currentPage}/{lastPage}</span></li></ul>
             </nav>
         </div>
 
         <!-- 메모 모달 -->
         <Modal bind:open={memoOpen} on:close={() => { memoOpen=false; memoRow=null; memoText=''; }}
-               title="관리자 메모" ariaDescription="주문 관리자 메모 편집" width="640px">
+               title="관리자 메모" ariaDescription="주문 관리자 메모 편집" width={640}>
             <svelte:fragment slot="body">
                 <div class="field">
                     <label class="label">주문번호</label>
@@ -474,19 +565,123 @@
             </svelte:fragment>
             <svelte:fragment slot="footer">
                 <div class="buttons">
-                    <button class="button is-link" on:click={saveMemo}><span class="material-icons" aria-hidden="true">save</span>&nbsp;저장</button>
-                    <button class="button" on:click={() => { memoOpen=false; memoRow=null; memoText=''; }}>닫기</button>
+                    <button class="button is-link" on:click={saveMemo} type="button"><span class="material-icons" aria-hidden="true">save</span>&nbsp;저장</button>
+                    <button class="button" on:click={() => { memoOpen=false; memoRow=null; memoText=''; }} type="button">닫기</button>
                 </div>
             </svelte:fragment>
         </Modal>
 
-        <!-- ✅ 변경이력 모달 -->
+        <!-- 송장/고객요청사항 수정 모달 (세로형) -->
+        <Modal
+                bind:open={shipOpen}
+                on:close={closeShipEdit}
+                title="송장번호 / 고객요청사항"
+                ariaDescription="송장번호와 고객요청사항을 수정합니다"
+                width={760}
+        >
+            <svelte:fragment slot="body">
+                <div class="shipv">
+                    <div class="shipv-head">
+                        <div>
+                            <div class="shipv-label">주문번호</div>
+                            <div class="shipv-orderno mono">{shipRow?.channel_order_no}</div>
+                        </div>
+                        <div class="shipv-hint">
+                            <span class="tag is-light">편집 전용</span>
+                            <span class="text-dim">빈값 저장 시 null 처리</span>
+                        </div>
+                    </div>
+
+                    <section class="shipv-card" aria-label="송장번호 입력">
+                        <div class="shipv-card__title">
+                            <span class="material-icons" aria-hidden="true">local_shipping</span>
+                            송장번호
+                        </div>
+
+                        <div class="field">
+                            <div class="control">
+                                <input
+                                        id="shipTrackingInput"
+                                        class="input shipv-input"
+                                        type="text"
+                                        placeholder="송장번호 입력 (Enter로 저장)"
+                                        bind:value={shipTracking}
+                                        on:keydown={(e)=>{ if(e.key==='Enter'){ e.preventDefault(); saveShipEdit(); } }}
+                                />
+                            </div>
+                            <p class="help shipv-help">숫자/문자 모두 허용. Enter로 바로 저장 가능합니다.</p>
+                        </div>
+
+                        <div class="shipv-preview">
+                            <div class="shipv-preview__label">현재 값</div>
+                            <div class="shipv-preview__box mono">{shipRow?.tracking_no || '-'}</div>
+                        </div>
+                    </section>
+
+                    <section class="shipv-card" aria-label="고객요청사항 입력">
+                        <div class="shipv-card__title">
+                            <span class="material-icons" aria-hidden="true">chat</span>
+                            고객요청사항
+                        </div>
+
+                        <div class="field">
+                            <div class="control">
+                                <textarea
+                                        class="textarea shipv-textarea"
+                                        rows="6"
+                                        placeholder="고객요청사항 입력"
+                                        bind:value={shipReq}
+                                ></textarea>
+                            </div>
+                            <p class="help shipv-help">농협몰에서 'null' 텍스트가 오는 경우가 있어 그대로 저장될 수 있습니다.</p>
+                        </div>
+
+                        <div class="shipv-preview">
+                            <div class="shipv-preview__label">현재 값</div>
+                            <div class="shipv-preview__box">{shipRow?.shipping_request || '-'}</div>
+                        </div>
+                    </section>
+
+                    <div class="shipv-note">
+                        저장은 주문 데이터만 갱신합니다. 변경 이력은 <b>변경이력</b>에서 확인합니다.
+                    </div>
+                </div>
+            </svelte:fragment>
+
+            <svelte:fragment slot="footer">
+                <div class="shipv-footer">
+                    <button
+                            class="button is-light"
+                            disabled={!shipRow}
+                            type="button"
+                            on:click={() => {
+                              const row = shipRow;           // ✅ 먼저 캡처
+                              if (!row) return;
+                              closeShipEdit();               // 모달 닫고 상태 초기화
+                              openChanges(row);              // ✅ 캡처한 row로 호출
+                            }}
+
+                    >
+                        <span class="material-icons" aria-hidden="true">history</span>&nbsp;변경이력
+                    </button>
+
+                    <div class="shipv-footer__right">
+                        <button class="button is-link" on:click={saveShipEdit} disabled={shipSaving} type="button">
+                            <span class="material-icons" aria-hidden="true">save</span>&nbsp;저장
+                        </button>
+                        <button class="button" on:click={closeShipEdit} disabled={shipSaving} type="button">닫기</button>
+                    </div>
+                </div>
+            </svelte:fragment>
+        </Modal>
+
+        <!-- 변경이력 모달 -->
         <Modal
                 bind:open={changeOpen}
                 on:close={() => { changeOpen=false; changeOrder=null; changeLogs=[]; }}
                 title="변경 이력"
                 ariaDescription="주문 변경 이력 diff"
-                width="900px"
+                width={900}
         >
             <svelte:fragment slot="body">
                 <div class="mb-3">
@@ -529,7 +724,7 @@
 
             <svelte:fragment slot="footer">
                 <div class="buttons">
-                    <button class="button" on:click={() => { changeOpen=false; changeOrder=null; changeLogs=[]; }}>닫기</button>
+                    <button class="button" on:click={() => { changeOpen=false; changeOrder=null; changeLogs=[]; }} type="button">닫기</button>
                 </div>
             </svelte:fragment>
         </Modal>
@@ -556,7 +751,7 @@
     .chip--ghost { background:#f1f5f9; color:#334155; }
     .chip--info { background:#e6fffb; color:#0b8f7a; }
 
-    /* ✅ 변경이력 칩: 튀게 + 버튼 */
+    /* 변경이력 칩 */
     .chip--warn { background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; }
     .chip--btn { border:none; cursor:pointer; }
     .chip--btn:hover { filter:brightness(.98); }
@@ -577,7 +772,7 @@
     .btn-more:hover { text-decoration: underline; }
 
     .icon-btn { padding:0 8px; height:32px; display:inline-flex; align-items:center; justify-content:center; }
-    .icon-btn .material-icons { font-size:24px; }
+    .icon-btn .material-icons { font-size:22px; }
     .selectbox input { width:16px; height:16px; }
 
     /* ===== PRETTY TOOLBAR ===== */
@@ -609,4 +804,121 @@
     .diff-old { background:#f8fafc; color:#334155; }
     .diff-new { background:#ecfeff; color:#0f766e; border-color:#a5f3fc; }
     .diff-arrow { display:flex; align-items:center; justify-content:center; color:#94a3b8; }
+
+    /* ─────────────────────────────────────────────────────────────
+       세로형 송장/요청사항 편집 모달 스타일
+       ───────────────────────────────────────────────────────────── */
+    .shipv{
+        max-width: 100%;
+        overflow-x: hidden; /* ✅ 가로 스크롤 방어 */
+    }
+
+    .shipv-head{
+        display:flex;
+        align-items:flex-start;
+        justify-content:space-between;
+        gap:1rem;
+        padding:.25rem 0 .85rem;
+        border-bottom:1px solid #eef2f7;
+        margin-bottom: 1rem;
+        flex-wrap:wrap;
+    }
+    .shipv-label{
+        font-size:.75rem;
+        color:#6b7280;
+        font-weight:800;
+        margin-bottom:.15rem;
+    }
+    .shipv-orderno{
+        font-size:1.05rem;
+        font-weight:900;
+        color:#111827;
+    }
+    .shipv-hint{
+        display:flex;
+        align-items:center;
+        gap:.6rem;
+        flex-wrap:wrap;
+        justify-content:flex-end;
+    }
+
+    .shipv-card{
+        border:1px solid #eef2f7;
+        border-radius:14px;
+        padding:14px;
+        background:#fff;
+        box-shadow: 0 1px 4px rgba(0,0,0,.04);
+        margin-bottom: 12px;
+    }
+    .shipv-card__title{
+        display:flex;
+        align-items:center;
+        gap:.45rem;
+        font-weight:900;
+        color:#334155;
+        margin-bottom:.75rem;
+    }
+    .shipv-card__title .material-icons{
+        font-size:20px;
+        color:#64748b;
+    }
+
+    .shipv-input{
+        height: 44px;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: .2px;
+    }
+    .shipv-textarea{
+        font-size: .98rem;
+        line-height: 1.45;
+    }
+    .shipv-help{
+        margin-top:.45rem;
+        color:#6b7280;
+    }
+
+    .shipv-preview{
+        margin-top:.9rem;
+        padding-top:.85rem;
+        border-top:1px dashed #eef2f6;
+    }
+    .shipv-preview__label{
+        font-size:.75rem;
+        color:#6b7280;
+        font-weight:800;
+        margin-bottom:.35rem;
+    }
+    .shipv-preview__box{
+        background:#f8fafc;
+        border:1px solid #e5e7eb;
+        border-radius:12px;
+        padding:.6rem .7rem;
+        word-break: break-word;
+        max-width:100%;
+        box-sizing:border-box;
+    }
+
+    .shipv-note{
+        margin-top: 8px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background:#f1f5f9;
+        color:#475569;
+        font-size:.9rem;
+    }
+
+    .shipv-footer{
+        width:100%;
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:.75rem;
+        flex-wrap:wrap;
+    }
+    .shipv-footer__right{
+        display:flex;
+        gap:.5rem;
+        flex-wrap:wrap;
+    }
 </style>

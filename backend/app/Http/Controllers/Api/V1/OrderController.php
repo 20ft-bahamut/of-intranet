@@ -10,6 +10,8 @@ use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Support\Str;
+
 
 class OrderController extends Controller
 {
@@ -231,27 +233,68 @@ class OrderController extends Controller
     {
         $data = $request->validated();
 
-        $dirty = false;
-        foreach (['admin_memo','tracking_no','status_std'] as $k) {
+        // 이번 요구: 송장번호 + 고객요청사항(배송요구사항) + 기존 유지(메모/상태)
+        $keys = ['admin_memo','tracking_no','shipping_request','status_std'];
+
+        // 요청에 포함된 키만 patch 대상으로
+        $patch = [];
+        foreach ($keys as $k) {
             if (array_key_exists($k, $data)) {
-                $order->{$k} = $data[$k];
-                $dirty = true;
+                $patch[$k] = $data[$k];
             }
         }
 
-        if (!$dirty) {
+        if (empty($patch)) {
             return ApiResponse::fail('validation_failed', '수정할 값이 없습니다.', 422, [
-                'fields' => ['required_one_of' => ['admin_memo','tracking_no','status_std']]
+                'fields' => ['required_one_of' => $keys]
             ]);
         }
 
-        $order->save();
+        $now = now();
+        $uploadId = (string) Str::uuid(); // 변경 묶음(선택이지만 히스토리 추적에 좋음)
+
+        // 변경된 필드만 로그 생성
+        $changeRows = [];
+        foreach ($patch as $field => $newVal) {
+            $oldVal = $order->{$field};
+
+            $oldStr = $oldVal === null ? '' : (string) $oldVal;
+            $newStr = $newVal === null ? '' : (string) $newVal;
+
+            if ($oldStr === $newStr) continue;
+
+            $changeRows[] = [
+                'order_id'   => (int) $order->id,
+                'upload_id'  => $uploadId,
+                'source'     => 'manual',
+                'field'      => $field,
+                'old_value'  => $oldStr,
+                'new_value'  => $newStr,
+                'changed_by' => null,   // ✅ 누가 안 씀
+                'created_at' => $now,   // ✅ 언제(= 변경시각)
+                'updated_at' => $now,
+            ];
+        }
+
+        if (empty($changeRows)) {
+            return ApiResponse::fail('validation_failed', '수정할 값이 없습니다.', 422);
+        }
+
+        DB::transaction(function () use ($order, $patch, $changeRows) {
+            foreach ($patch as $k => $v) {
+                $order->{$k} = $v;
+            }
+            $order->save();
+
+            DB::table('order_change_logs')->insert($changeRows);
+        });
 
         return ApiResponse::success(
-            $this->normalizeOrderResponse($order),
+            $this->normalizeOrderResponse($order->refresh()),
             '주문이 갱신되었습니다.'
         );
     }
+
 
     public function bulkUpdateTracking(Request $req)
     {

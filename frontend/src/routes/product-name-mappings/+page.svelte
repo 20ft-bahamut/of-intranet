@@ -4,6 +4,7 @@
     import { toast } from '$lib/stores/toast.js';
     import SearchBar from '$lib/components/SearchBar.svelte';
     import ProductPickerModal from '$lib/components/ProductPickerModal.svelte';
+    import ConfirmModal from '$lib/components/ConfirmModal.svelte';
     import { useQueryState } from '$lib/utils/queryState.js';
 
     // ── URL 쿼리 상태(검색/필터/페이지) 공통화
@@ -24,9 +25,14 @@
     let meta = { current_page: 1, last_page: 1, per_page: 20, total: 0 };
     let loading = false;
 
-    // 모달
+    // 모달(상품 선택)
     let pickerOpen = false;
     let targetMapping = null;
+
+    // 삭제 확인 모달
+    let deleteOpen = false;
+    let deleteTarget = null;
+    let deleteBusy = false;
 
     // 백필 busy
     let backfillBusyId = 0;
@@ -146,7 +152,55 @@
         }
     }
 
+    // ===== 삭제 =====
+    function askDelete(row) {
+        deleteTarget = row;
+        deleteOpen = true;
+    }
+
+    async function confirmDelete() {
+        if (!deleteTarget) return;
+        deleteBusy = true;
+        try {
+            const res = await fetchJson(`/product-name-mappings/${deleteTarget.id}`, { method: 'DELETE' });
+            if (res?.ok === false) throw new Error(res.message || '삭제 실패');
+
+            toast.success('삭제되었습니다.');
+            deleteOpen = false;
+            deleteTarget = null;
+
+            // 페이지 보정 포함 재로드
+            await load(page);
+        } catch (e) {
+            toast.danger(e.message || String(e));
+        } finally {
+            deleteBusy = false;
+        }
+    }
+
     onMount(() => { syncFromQS(); load(page); });
+
+    const deleteMessage = () => {
+        if (!deleteTarget) return '';
+        const ch = deleteTarget.channel_name ?? `CH ${deleteTarget.channel_id}`;
+        const lt = (deleteTarget.listing_title ?? '').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+        const ot = (deleteTarget.option_title ?? '').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+        const otLine = (deleteTarget.option_title == null || deleteTarget.option_title === '')
+            ? '<span class="has-text-grey">(옵션명 없음)</span>'
+            : `<strong>${ot}</strong>`;
+
+        return `
+            <p><strong>이 맵핑을 삭제</strong>합니다. 복구는 직접 재등록해야 합니다.</p>
+            <p class="mt-2">
+                <span class="tag is-light">${ch}</span>
+                <span class="tag is-light ml-1">#${deleteTarget.id}</span>
+            </p>
+            <p class="mt-2">
+                <div><span class="has-text-grey">채널 상품명</span>: <strong>${lt}</strong></div>
+                <div><span class="has-text-grey">옵션명</span>: ${otLine}</div>
+            </p>
+        `;
+    };
 </script>
 
 <svelte:head><title>상품명 맵핑 · OF Intranet</title></svelte:head>
@@ -237,15 +291,23 @@
                                 <button class="button is-light is-small icon-btn" title="새로고침" on:click={() => load(page)}>
                                     <span class="material-icons">refresh</span>
                                 </button>
+
                                 <button class="button is-small is-primary" on:click={() => openPicker(row)}>
                                     {row.product_id ? '변경' : '매핑'}
                                 </button>
+
                                 {#if row.product_id}
                                     <button class="button is-small" on:click={() => unassign(row)}>해제</button>
                                     <button class={"button is-small is-info" + (backfillBusyId===row.id ? " is-loading": "")}
                                             title="주문 백필(정확 매칭)" on:click={() => backfill(row, 'exact')}
                                             disabled={backfillBusyId===row.id}>백필</button>
                                 {/if}
+
+                                <!-- ✅ 삭제 버튼(항상 제공) -->
+                                <button class="button is-small is-danger is-light" title="삭제" on:click={() => askDelete(row)}>
+                                    <span class="material-icons" aria-hidden="true" style="font-size:18px;">delete</span>
+                                    <span class="ml-1">삭제</span>
+                                </button>
                             </div>
                         </div>
                     </article>
@@ -266,9 +328,26 @@
     </div>
 </section>
 
-<ProductPickerModal bind:open={pickerOpen} {targetMapping}
-                    onClose={() => { targetMapping = null; }}
-                    onPicked={handlePicked} />
+<ProductPickerModal
+        bind:open={pickerOpen}
+        {targetMapping}
+        onClose={() => { targetMapping = null; }}
+        onPicked={handlePicked}
+/>
+
+<ConfirmModal
+        bind:open={deleteOpen}
+        title="상품명 맵핑 삭제"
+        message={deleteMessage()}
+        confirmText="삭제"
+        cancelText="취소"
+        confirmClass="is-danger"
+        busy={deleteBusy}
+        width={520}
+        maxHeight={520}
+        on:confirm={confirmDelete}
+        on:cancel={() => { deleteOpen=false; deleteTarget=null; }}
+/>
 
 <style>
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "D2Coding", "Noto Sans Mono CJK", monospace; }

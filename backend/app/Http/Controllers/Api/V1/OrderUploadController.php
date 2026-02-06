@@ -124,7 +124,6 @@ class OrderUploadController extends Controller
 
         if (is_numeric($value)) {
             // 엑셀 serial 등 숫자 날짜는 여기서 처리하지 않음(파서에서 이미 처리하는 전제가 일반적)
-            // 그래도 들어오면 fallback
             return $fallback;
         }
 
@@ -140,12 +139,53 @@ class OrderUploadController extends Controller
     }
 
     /**
+     * ✅ 배송요구사항 누적(append) 정책 (엑셀 재업로드 전용)
+     * - 새 값이 비어있으면 기존 유지(덮어쓰기/날림 방지)
+     * - 기존에 이미 포함된 문구면 중복 누적 방지
+     * - varchar(255) 초과 시 최신 내용이 남도록 tail 255 유지
+     *
+     * 주의: "null" 문자열은 실제로 채널이 보내는 값일 수 있어 null로 취급하지 않음
+     */
+    private function mergeShippingRequest(?string $existing, $incoming): ?string
+    {
+        $incomingStr = $incoming === null ? '' : trim((string) $incoming);
+        $existingStr = $existing === null ? '' : trim((string) $existing);
+
+        // 새 값이 없으면 기존 유지
+        if ($incomingStr === '') {
+            return $existingStr !== '' ? $existingStr : null;
+        }
+
+        // 기존이 없으면 새 값 채움
+        if ($existingStr === '') {
+            return $incomingStr;
+        }
+
+        // 중복 방지(부분 포함이면 누적 안 함)
+        if (mb_strpos($existingStr, $incomingStr) !== false) {
+            return $existingStr;
+        }
+
+        $sep = ' / ';
+        $merged = $existingStr . $sep . $incomingStr;
+
+        // varchar(255) 초과 방지: 최신이 남도록 tail 유지
+        if (mb_strlen($merged) > 255) {
+            $merged = mb_substr($merged, -255);
+            $merged = ltrim($merged);
+        }
+
+        return $merged;
+    }
+
+    /**
      * 미리보기 후 → DB 반영(커밋)
      *
      * - UNIQUE KEY: (channel_id, channel_order_no)
      * - tracking_no 없는 재업로드는 기존 tracking_no 덮지 않음(2단계 upsert)
      * - 변경이력(order_change_logs) 기록: created_at을 변경시각으로 사용(※ changed_at 컬럼 없음)
-     * - ordered_at 없으면 업로드(커밋) 시각으로 대체
+     * - ordered_at 없으면 업로드(커밋) 시각으로 대체(단, 업데이트에서는 ordered_at 컬럼 갱신 제외)
+     * - ✅ shipping_request: 엑셀 재업로드 시 기존 뒤에 누적(append)
      */
     public function commit(CommitChannelOrdersRequest $req, Channel $channel, ProcessChannelExcel $proc)
     {
@@ -179,9 +219,9 @@ class OrderUploadController extends Controller
         }
 
         $now = now();
-        $uploadId  = (string) Str::uuid();        // ✅ 변경이력 배치 묶음
-        $changedBy = Auth::id();                  // ✅ 로그인 사용자(없으면 null)
-        $source    = 'excel';                     // ✅ 출처
+        $uploadId  = (string) Str::uuid(); // 변경이력 배치 묶음
+        $changedBy = Auth::id();           // 로그인 사용자(없으면 null)
+        $source    = 'excel';
 
         $validPayload = [];
         $failures = [];
@@ -189,7 +229,6 @@ class OrderUploadController extends Controller
 
         $orderNos = [];
         $idx = 0;
-
         $orderedAtFilled = 0;
 
         // 1) 유효 payload 만들기
@@ -247,7 +286,7 @@ class OrderUploadController extends Controller
             // 배송요구사항 키 흡수
             $shippingRequest = $r['shipping_request'] ?? ($r['delivery_message'] ?? null);
 
-            // ordered_at: 없으면 커밋 시각으로 대체
+            // ordered_at: 없으면 커밋 시각으로 대체 (단, update에서는 ordered_at 컬럼 갱신 제외)
             $orderedAt = $this->normalizeOrderedAt($r['ordered_at'] ?? null, $now);
             if (($r['ordered_at'] ?? null) === null || ($r['ordered_at'] ?? '') === '') {
                 $orderedAtFilled++;
@@ -330,12 +369,29 @@ class OrderUploadController extends Controller
                     'tracking_no',
                     'receiver_name', 'receiver_phone', 'receiver_addr_full',
                     'shipping_request',
+                    'ordered_at',
                 ]);
 
             foreach ($existing as $ex) {
                 $existingMap[$ex->channel_order_no] = $ex;
             }
         }
+
+        // 2.5) ✅ shipping_request 누적(append) 적용 (엑셀 재업로드로 기존 값 날아가는 문제 해결)
+        foreach ($validPayload as &$row) {
+            $ex = $existingMap[$row['channel_order_no']] ?? null;
+            if (!$ex) continue;
+
+            $row['shipping_request'] = $this->mergeShippingRequest(
+                $ex->shipping_request,
+                $row['shipping_request'] ?? null
+            );
+
+            // ordered_at은 "최초 고정" 정책: update에서는 컬럼 갱신 제외
+            // 다만, 기존 ordered_at이 NULL이고 이번에 채울 수 있다면 채우고 싶으면
+            // 아래처럼 조건 업데이트로 별도 처리해야 함(현재는 upsert update에서 제외했으니 그대로 둠).
+        }
+        unset($row);
 
         // 3) 변경이력 쌓기 (created_at 사용, upload_id/source/changed_by 채움)
         $changeRows = [];
@@ -373,13 +429,14 @@ class OrderUploadController extends Controller
 
                 $uniqueBy = ['channel_id', 'channel_order_no'];
 
+                // ✅ ordered_at은 업데이트 제외(최초 주문일 고정)
                 $commonUpdateCols = [
                     'product_id',
                     'product_title', 'option_title', 'quantity',
                     'buyer_name', 'buyer_phone', 'buyer_postcode', 'buyer_addr_full', 'buyer_addr1', 'buyer_addr2',
                     'receiver_name', 'receiver_phone', 'receiver_postcode', 'receiver_addr_full', 'receiver_addr1', 'receiver_addr2',
                     'shipping_request', 'customer_note', 'admin_memo',
-                    //'ordered_at',
+                    // 'ordered_at',  // ✅ 의도적으로 제외
                     'status_src', 'status_std',
                     'raw_payload', 'raw_meta', 'raw_hash', 'updated_at',
                 ];
